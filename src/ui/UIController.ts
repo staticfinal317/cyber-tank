@@ -1,7 +1,8 @@
 import { TECH_TREE, WEAPONS } from '../content/weapons';
 import { CHASSIS } from '../content/chassis';
 import { THEME_ORDER, THEMES } from '../content/themes';
-import type { ChassisId, GameOptions, LoadoutPreset, ReplayData, RunSummary, SaveData, TankLoadout, ThemeId, WeaponId } from '../core/types';
+import { EXPEDITION_MISSIONS, SEASONS, SURFACES, WEATHER } from '../content/expedition';
+import type { ChassisId, ExpeditionMissionId, GameOptions, LoadoutPreset, ReplayData, RouteId, RunSummary, SaveData, SeasonId, TankLoadout, ThemeId, WeaponId } from '../core/types';
 import { seedFromDate } from '../core/RNG';
 import type { Simulation } from '../gameplay/Simulation';
 import { WorkshopController } from '../workshop/WorkshopController';
@@ -18,7 +19,7 @@ export interface UIActions {
   unlockChassis: (id: ChassisId) => void;
   playReplay: (replay: ReplayData) => void;
   themePreview: (theme: ThemeId) => void;
-  previewWorkshop: (loadout: TankLoadout) => void;
+  previewWorkshop: (loadout: TankLoadout, season: SeasonId) => void;
   closeWorkshop: () => void;
   saveLoadout: (preset: LoadoutPreset) => void;
   testDrive: (options: GameOptions) => void;
@@ -45,10 +46,10 @@ export class UIController {
   constructor(private readonly actions: UIActions) {
     this.renderThemes();
     this.workshop = new WorkshopController({
-      preview: (loadout) => actions.previewWorkshop(loadout),
+      preview: (loadout, season) => actions.previewWorkshop(loadout, season),
       save: (preset) => actions.saveLoadout(preset),
-      testDrive: (loadout) => actions.testDrive(this.optionsWithLoadout(loadout, true)),
-      launch: (loadout) => actions.launchLoadout(this.optionsWithLoadout(loadout, false)),
+      testDrive: (loadout, season, route, mission) => actions.testDrive(this.optionsWithLoadout(loadout, true, season, route, mission)),
+      launch: (loadout, season, route, mission) => actions.launchLoadout(this.optionsWithLoadout(loadout, false, season, route, mission)),
       close: () => this.closeWorkshop(),
       unlock: (category, id, cost) => actions.unlockPart(category, id, cost),
     });
@@ -76,8 +77,9 @@ export class UIController {
     byId('pause-button').classList.remove('is-hidden');
     if (matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0) byId('touch-controls').classList.remove('is-hidden');
     byId('p2-status').classList.toggle('is-hidden', !this.options.coop);
-    byId('mission-label').textContent = options?.testDrive ? '20 秒全地形试驾' : '守护星核基地';
-    byId('event-label').textContent = options?.testDrive ? '测试转向、制动和抓地' : `${THEMES[this.options.theme].mechanic}运行中`;
+    const mission = options?.missionId ? EXPEDITION_MISSIONS[options.missionId] : undefined;
+    byId('mission-label').textContent = options?.testDrive ? `20 秒${SEASONS[options.season ?? 'spring'].name}试驾` : mission?.name ?? '守护星核基地';
+    byId('event-label').textContent = options?.testDrive ? '测试转向、制动和抓地' : mission?.description ?? `${THEMES[this.options.theme].mechanic}运行中`;
     this.paused = false;
   }
 
@@ -125,10 +127,17 @@ export class UIController {
     byId('enemy-label').textContent = `伙伴机 ${sim.enemies.length}`;
     byId('combo-label').textContent = `连击 x${sim.combo}`;
     byId('combo-label').classList.toggle('is-hot', sim.combo >= 3);
-    byId('event-label').textContent = sim.options.testDrive ? '跟随发光路线完成操控检查' : sim.eventKind === 'none' ? `${THEMES[this.options.theme].mechanic}运行中` : this.eventName(sim.eventKind);
+    if (sim.options.biome && sim.options.missionId) {
+      const progress = `${sim.missionProgressValue} / ${sim.missionTarget}`;
+      byId('mission-label').textContent = `${EXPEDITION_MISSIONS[sim.options.missionId].name} · ${progress}`;
+      byId('event-label').textContent = `${SURFACES[sim.players[0]?.surface ?? 'road'].name} · ${WEATHER[sim.weather.id].name}${sim.weather.warning ? '（强天气预警）' : ''}`;
+    } else {
+      byId('event-label').textContent = sim.options.testDrive ? '跟随发光路线完成操控检查' : sim.eventKind === 'none' ? `${THEMES[this.options.theme].mechanic}运行中` : this.eventName(sim.eventKind);
+    }
     const boss = sim.enemies.find((enemy) => enemy.kind === 'boss');
     byId('boss-hud').classList.toggle('is-hidden', !boss);
     if (boss) {
+      byId('boss-name').textContent = boss.bossVariant === 'tide-leviathan' ? '潮汐巨鲸 · 霸主' : boss.bossVariant === 'ridge-colossus' ? '云岭巨像 · 霸主' : '区域霸主';
       const percent = Math.max(0, boss.hp / boss.maxHp);
       byId('boss-hp-bar').style.width = `${percent * 100}%`;
       byId('boss-hp-text').textContent = `${Math.ceil(percent * 100)}%`;
@@ -146,9 +155,10 @@ export class UIController {
     byId('hud').classList.add('is-hidden'); byId('touch-controls').classList.add('is-hidden');
     byId('pause-button').classList.add('is-hidden'); byId('boss-hud').classList.add('is-hidden');
     byId('game-over').classList.remove('is-hidden');
-    byId('result-kicker').textContent = summary.wave >= 5 ? '闪耀任务完成' : '本次探索完成';
+    const mission = summary.missionId ? EXPEDITION_MISSIONS[summary.missionId] : undefined;
+    byId('result-kicker').textContent = mission ? `${SEASONS[mission.season].name}远征完成` : summary.wave >= 5 ? '闪耀任务完成' : '本次探索完成';
     byId('result-title').textContent = summary.title;
-    byId('result-message').textContent = summary.wave >= 5 ? '你已经能独立守护一座星核基地。' : '带着新收集的星屑回来，下次会走得更远。';
+    byId('result-message').textContent = mission ? `${mission.name}目标达成，新路线与任务奖励已记录。` : summary.wave >= 5 ? '你已经能独立守护一座星核基地。' : '带着新收集的星屑回来，下次会走得更远。';
     byId('result-score').textContent = summary.score.toLocaleString('zh-CN');
     byId('result-wave').textContent = summary.wave.toString();
     byId('result-repaired').textContent = summary.repaired.toString();
@@ -279,8 +289,8 @@ export class UIController {
     byId('main-menu').classList.remove('is-hidden');
   }
 
-  private optionsWithLoadout(loadout: TankLoadout, testDrive: boolean): GameOptions {
-    const options: GameOptions = { ...this.options, chassis: loadout.chassis, loadout, testDrive };
+  private optionsWithLoadout(loadout: TankLoadout, testDrive: boolean, season: SeasonId, route: RouteId, missionId: ExpeditionMissionId): GameOptions {
+    const options: GameOptions = { ...this.options, chassis: loadout.chassis, loadout, testDrive, biome: 'mountain-sea-valley', season, route, missionId };
     if (options.mode === 'daily') options.seed = seedFromDate(); else delete options.seed;
     return options;
   }
@@ -291,6 +301,12 @@ export class UIController {
   }
 
   private eventName(kind: Simulation['eventKind']): string {
-    return kind === 'emp' ? '电磁风暴进行中' : kind === 'meteor' ? '流星雨进行中' : kind === 'supply' ? '补给信标已抵达' : '场景稳定';
+    return kind === 'emp' ? '电磁风暴进行中'
+      : kind === 'meteor' ? '流星雨进行中'
+        : kind === 'supply' ? '补给信标已抵达'
+          : kind === 'flood' ? '春汛水位上涨'
+            : kind === 'lightning' ? '雷暴高地预警'
+              : kind === 'leaf-gust' ? '山谷横风增强'
+                : kind === 'snow-squall' ? '暴雪区域扩大' : '场景稳定';
   }
 }

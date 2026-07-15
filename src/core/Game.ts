@@ -3,7 +3,8 @@ import { TECH_TREE, WEAPONS } from '../content/weapons';
 import { CHASSIS } from '../content/chassis';
 import { ACHIEVEMENTS } from '../content/achievements';
 import { THEMES } from '../content/themes';
-import type { AmmoId, ChassisId, GameOptions, LoadoutPreset, MovementModuleId, PaintId, ReplayData, RunSummary, SaveData, TankLoadout, ThemeId, ToolId, WeaponId } from './types';
+import { EXPEDITION_MISSIONS, SEASONS } from '../content/expedition';
+import type { AmmoId, ChassisId, GameOptions, LoadoutPreset, MovementModuleId, PaintId, ReplayData, RunSummary, SaveData, SeasonId, TankLoadout, ThemeId, ToolId, WeaponId } from './types';
 import { Simulation } from '../gameplay/Simulation';
 import { InputManager } from '../input/InputManager';
 import { LocalSaveRepository } from '../persistence/LocalSaveRepository';
@@ -23,6 +24,7 @@ export class Game {
   private paused = false;
   private resultHandled = false;
   private workshopActive = false;
+  private workshopSeason?: SeasonId;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new ThreeRenderer(canvas, THEMES['neon-city']);
@@ -38,7 +40,7 @@ export class Game {
       unlockChassis: (id) => void this.unlockChassis(id),
       playReplay: (replay) => this.playReplay(replay),
       themePreview: (theme) => this.previewTheme(theme),
-      previewWorkshop: (loadout) => this.previewWorkshop(loadout),
+      previewWorkshop: (loadout, season) => this.previewWorkshop(loadout, season),
       closeWorkshop: () => this.closeWorkshop(),
       saveLoadout: (preset) => void this.saveLoadout(preset),
       testDrive: (options) => this.start(options),
@@ -60,7 +62,8 @@ export class Game {
     this.resultHandled = false;
     this.paused = false;
     this.workshopActive = false;
-    this.renderer.setTheme(options.theme);
+    if (options.biome === 'mountain-sea-valley') this.renderer.setExpeditionSeason(options.season ?? 'spring');
+    else this.renderer.setTheme(options.theme);
     this.simulation = new Simulation(options, this.save.techRanks);
     this.renderer.setSimulation(this.simulation);
     this.bindSimulation(this.simulation);
@@ -81,13 +84,14 @@ export class Game {
 
   private previewTheme(theme: ThemeId): void { if (!this.simulation) this.renderer.setTheme(theme); }
 
-  private previewWorkshop(loadout: TankLoadout): void {
-    if (this.workshopActive) this.renderer.updateWorkshopLoadout(loadout);
-    else { this.renderer.showWorkshop(loadout); this.workshopActive = true; }
+  private previewWorkshop(loadout: TankLoadout, season: SeasonId): void {
+    if (this.workshopActive && this.workshopSeason === season) this.renderer.updateWorkshopLoadout(loadout);
+    else { this.renderer.showWorkshop(loadout, season); this.workshopActive = true; this.workshopSeason = season; }
   }
 
   private closeWorkshop(): void {
     this.workshopActive = false;
+    this.workshopSeason = undefined;
     this.renderer.setTheme(this.lastOptions?.theme ?? 'neon-city');
   }
 
@@ -149,6 +153,11 @@ export class Game {
       );
     });
     sim.on('event', ({ message }) => this.ui.toast('关卡事件', message));
+    sim.on('mission', ({ missionId }) => {
+      const mission = EXPEDITION_MISSIONS[missionId];
+      this.ui.toast('远征目标达成', `${mission.name}完成！任务结束后可领取 ${mission.reward} 星屑`);
+      this.renderer.ability(sim.players[0]?.pos ?? { x: 0, z: 0 }, SEASONS[mission.season].accent);
+    });
     sim.on('message', ({ title, body }) => this.ui.toast(title, body));
     sim.on('gameOver', () => void this.finishRun(sim));
   }
@@ -169,12 +178,23 @@ export class Game {
       repaired: sim.repaired,
       stars,
       title,
+      season: sim.options.season,
+      missionId: sim.options.missionId,
     };
     const replay: ReplayData = {
       id: crypto.randomUUID(), createdAt: new Date().toISOString(), options: sim.options,
       summary, frames: sim.replayFrames,
     };
     this.save = await this.repo.addRun(summary, replay);
+    const missionId = sim.options.missionId;
+    if (sim.options.route && !this.save.discoveredRoutes.includes(sim.options.route)) this.save.discoveredRoutes.push(sim.options.route);
+    if (missionId && sim.missionComplete && !this.save.completedMissions.includes(missionId)) {
+      this.save.completedMissions.push(missionId);
+      this.save.starShards += EXPEDITION_MISSIONS[missionId].reward;
+    }
+    if (sim.options.season) {
+      this.save.seasonBestScores[sim.options.season] = Math.max(this.save.seasonBestScores[sim.options.season] ?? 0, summary.score);
+    }
     const achievementIds = [
       ...(sim.repaired >= 1 ? ['first-repair'] : []),
       ...(this.save.totalRepaired >= 50 ? ['helper-50'] : []),
@@ -186,10 +206,10 @@ export class Game {
     if (unlocked.length) {
       this.save.achievements.push(...unlocked);
       this.save.starShards += unlocked.length * 20;
-      await this.repo.save(this.save);
       const first = ACHIEVEMENTS.find((achievement) => achievement.id === unlocked[0]);
       if (first) this.ui.toast('新成就', `${first.name} · 奖励 20 星屑`);
     }
+    await this.repo.save(this.save);
     this.ui.setSave(this.save);
     this.ui.showResult(summary);
   }
@@ -240,9 +260,14 @@ export class Game {
       if (sim.options.testDrive && sim.elapsed >= 20) {
         const movement = sim.options.loadout?.movement;
         this.simulation = undefined; this.renderer.clearSimulation(); this.workshopActive = false;
+        this.workshopSeason = undefined;
         this.ui.returnToWorkshop(this.save, movement === 'amphibious' ? '浮航环稳定展开，水陆切换测试通过！' : '转向、制动与抓地测试全部通过！');
       }
       if (sim.options.mode === 'adventure' && sim.elapsed >= 480 && !this.resultHandled) {
+        sim.over = true;
+        void this.finishRun(sim);
+      }
+      if (sim.options.mode === 'adventure' && sim.missionComplete && sim.elapsed - sim.missionCompletedAt >= 1.8 && !this.resultHandled) {
         sim.over = true;
         void this.finishRun(sim);
       }

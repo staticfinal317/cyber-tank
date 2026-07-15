@@ -9,6 +9,7 @@ export type ThemeId =
 export type GameMode = 'adventure' | 'endless' | 'last-core' | 'daily';
 export type AssistLevel = 'easy' | 'standard' | 'expert';
 export type EnemyKind = 'scout' | 'charger' | 'gunner' | 'bulwark' | 'splitter' | 'medic' | 'sniper' | 'boss';
+export type BossVariant = 'tide-leviathan' | 'ridge-colossus';
 export type WeaponId = 'pulse' | 'scatter' | 'rail' | 'arc';
 export type ChassisId = 'spark' | 'guardian' | 'comet';
 export type AbilityId = 'shield' | 'repair' | 'dash' | 'storm';
@@ -20,6 +21,12 @@ export type MovementModuleId = 'road-wheel' | 'all-terrain' | 'snow-tread' | 'sa
 export type AmmoId = 'star-pulse' | 'ricochet' | 'frost' | 'repair-seed' | 'chain-lightning' | 'seed-core';
 export type ToolId = 'repair-arm' | 'scanner' | 'tractor' | 'bridge-projector';
 export type PaintId = 'sunrise-yellow' | 'sky-cyan' | 'forest-green' | 'aurora-violet';
+export type RouteId = 'ridge-route' | 'river-route';
+export type ExpeditionMissionId =
+  | 'spring-bridge' | 'spring-river'
+  | 'summer-beacon' | 'summer-island'
+  | 'autumn-orchard' | 'autumn-migration'
+  | 'winter-lighthouse' | 'winter-ice-rescue';
 
 export interface TankLoadout {
   chassis: ChassisId;
@@ -100,6 +107,10 @@ export interface GameOptions {
   weapon: WeaponId;
   chassis: ChassisId;
   loadout?: TankLoadout;
+  biome?: BiomeId;
+  season?: SeasonId;
+  route?: RouteId;
+  missionId?: ExpeditionMissionId;
   testDrive?: boolean;
   seed?: number;
 }
@@ -115,6 +126,8 @@ export interface RunSummary {
   repaired: number;
   stars: number;
   title: string;
+  season?: SeasonId;
+  missionId?: ExpeditionMissionId;
 }
 
 export interface ReplayFrame {
@@ -147,6 +160,9 @@ export interface SaveData {
   unlockedPaints: PaintId[];
   loadoutPresets: LoadoutPreset[];
   activePresetId: string;
+  discoveredRoutes: RouteId[];
+  completedMissions: ExpeditionMissionId[];
+  seasonBestScores: Partial<Record<SeasonId, number>>;
   techRanks: Record<string, number>;
   achievements: string[];
   leaderboard: RunSummary[];

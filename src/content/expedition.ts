@@ -1,5 +1,5 @@
 import type {
-  AmmoId, BiomeId, MovementModuleId, PaintId, SeasonId, SurfaceId, TankLoadout, ToolId, WeatherId,
+  AmmoId, BiomeId, ExpeditionMissionId, MovementModuleId, PaintId, RouteId, SeasonId, SurfaceId, TankLoadout, ToolId, WeatherId,
 } from '../core/types';
 
 export interface SurfaceDefinition {
@@ -54,6 +54,28 @@ export interface SeasonDefinition {
   accent: number;
   recommendedMovement: MovementModuleId;
   routeHint: string;
+  missions: [ExpeditionMissionId, ExpeditionMissionId];
+}
+
+export interface WeatherDefinition {
+  id: WeatherId;
+  name: string;
+  description: string;
+  visibility: number;
+  steering: number;
+  particle: 'none' | 'rain' | 'storm' | 'leaves' | 'snow';
+  color: number;
+}
+
+export interface ExpeditionMissionDefinition {
+  id: ExpeditionMissionId;
+  season: SeasonId;
+  name: string;
+  description: string;
+  objective: 'repair' | 'waves' | 'score';
+  target: number;
+  reward: number;
+  recommended: MovementModuleId;
 }
 
 export interface BiomeDefinition {
@@ -61,7 +83,7 @@ export interface BiomeDefinition {
   name: string;
   description: string;
   surfaces: SurfaceId[];
-  routes: Array<{ id: string; name: string; focus: 'mountain' | 'water' }>;
+  routes: Array<{ id: RouteId; name: string; focus: 'mountain' | 'water'; description: string }>;
 }
 
 export const SURFACES: Record<SurfaceId, SurfaceDefinition> = {
@@ -106,17 +128,41 @@ export const PAINTS: Record<PaintId, PaintDefinition> = {
 };
 
 export const SEASONS: Record<SeasonId, SeasonDefinition> = {
-  spring: { id: 'spring', name: '春季', forecast: '春雨将至', weather: 'spring-rain', accent: 0x8de8a7, recommendedMovement: 'amphibious', routeHint: '河道水位上涨，浮航路线将开放。' },
-  summer: { id: 'summer', name: '夏季', forecast: '午后雷阵雨', weather: 'thunderstorm', accent: 0x55e9ff, recommendedMovement: 'sand-float', routeHint: '沙滩路径干燥，雷雨时远离高地。' },
-  autumn: { id: 'autumn', name: '秋季', forecast: '山谷叶风', weather: 'leaf-wind', accent: 0xffb653, recommendedMovement: 'all-terrain', routeHint: '山路落叶较滑，越野轮更稳定。' },
-  winter: { id: 'winter', name: '冬季', forecast: '傍晚降雪', weather: 'snowfall', accent: 0xc8f4ff, recommendedMovement: 'snow-tread', routeHint: '湖面冻结形成捷径，深雪区需要履带。' },
+  spring: { id: 'spring', name: '春季', forecast: '春雨将至', weather: 'spring-rain', accent: 0x8de8a7, recommendedMovement: 'amphibious', routeHint: '河道水位上涨，浮航路线将开放。', missions: ['spring-bridge', 'spring-river'] },
+  summer: { id: 'summer', name: '夏季', forecast: '午后雷阵雨', weather: 'thunderstorm', accent: 0x55e9ff, recommendedMovement: 'sand-float', routeHint: '沙滩路径干燥，雷雨时远离高地。', missions: ['summer-beacon', 'summer-island'] },
+  autumn: { id: 'autumn', name: '秋季', forecast: '山谷叶风', weather: 'leaf-wind', accent: 0xffb653, recommendedMovement: 'all-terrain', routeHint: '山路落叶较滑，越野轮更稳定。', missions: ['autumn-orchard', 'autumn-migration'] },
+  winter: { id: 'winter', name: '冬季', forecast: '傍晚降雪', weather: 'snowfall', accent: 0xc8f4ff, recommendedMovement: 'snow-tread', routeHint: '湖面冻结形成捷径，深雪区需要履带。', missions: ['winter-lighthouse', 'winter-ice-rescue'] },
+};
+
+export const SEASON_ORDER: SeasonId[] = ['spring', 'summer', 'autumn', 'winter'];
+
+export const WEATHER: Record<WeatherId, WeatherDefinition> = {
+  clear: { id: 'clear', name: '晴朗', description: '能见度良好，所有系统稳定。', visibility: 1, steering: 1, particle: 'none', color: 0xffe7a2 },
+  'spring-rain': { id: 'spring-rain', name: '春雨', description: '泥地变滑，河流水位升高。', visibility: .86, steering: .9, particle: 'rain', color: 0x78ddff },
+  thunderstorm: { id: 'thunderstorm', name: '雷阵雨', description: '周期闪电会标记高地，技能恢复略快。', visibility: .72, steering: .86, particle: 'storm', color: 0x9d8cff },
+  'leaf-wind': { id: 'leaf-wind', name: '山谷叶风', description: '横风轻推机体，落叶会提示隐藏路径。', visibility: .92, steering: .82, particle: 'leaves', color: 0xffa653 },
+  snowfall: { id: 'snowfall', name: '降雪', description: '湖面冻结，深雪会拖慢普通车轮。', visibility: .78, steering: .74, particle: 'snow', color: 0xd7f6ff },
+};
+
+export const EXPEDITION_MISSIONS: Record<ExpeditionMissionId, ExpeditionMissionDefinition> = {
+  'spring-bridge': { id: 'spring-bridge', season: 'spring', name: '花溪修桥队', description: '修复 8 台桥梁机器人，让山村重新通行。', objective: 'repair', target: 8, reward: 80, recommended: 'all-terrain' },
+  'spring-river': { id: 'spring-river', season: 'spring', name: '春汛巡航', description: '沿上涨的河道守护 3 个补给波次。', objective: 'waves', target: 3, reward: 90, recommended: 'amphibious' },
+  'summer-beacon': { id: 'summer-beacon', season: 'summer', name: '雷雨信标', description: '在雷阵雨中取得 1800 分，为灯塔补充能量。', objective: 'score', target: 1800, reward: 100, recommended: 'sand-float' },
+  'summer-island': { id: 'summer-island', season: 'summer', name: '小岛救援', description: '修复 10 台受困机器人并守住沙滩。', objective: 'repair', target: 10, reward: 110, recommended: 'amphibious' },
+  'autumn-orchard': { id: 'autumn-orchard', season: 'autumn', name: '果园守护', description: '完成 4 个波次，保护成熟的山谷果园。', objective: 'waves', target: 4, reward: 110, recommended: 'all-terrain' },
+  'autumn-migration': { id: 'autumn-migration', season: 'autumn', name: '候鸟航标', description: '取得 2200 分，重新点亮迁徙航标。', objective: 'score', target: 2200, reward: 120, recommended: 'road-wheel' },
+  'winter-lighthouse': { id: 'winter-lighthouse', season: 'winter', name: '雪夜灯塔', description: '穿过深雪完成 4 个守护波次。', objective: 'waves', target: 4, reward: 130, recommended: 'snow-tread' },
+  'winter-ice-rescue': { id: 'winter-ice-rescue', season: 'winter', name: '冰湖救援', description: '在结冰湖面修复 12 台迷航机器人。', objective: 'repair', target: 12, reward: 140, recommended: 'snow-tread' },
 };
 
 export const BIOMES: Record<BiomeId, BiomeDefinition> = {
   'mountain-sea-valley': {
     id: 'mountain-sea-valley', name: '山海谷', description: '山路、瀑布、河流、沙滩与小岛相连的四季实验谷。',
     surfaces: ['road', 'mud', 'sand', 'shallow-water', 'deep-water', 'ice', 'deep-snow'],
-    routes: [{ id: 'ridge', name: '云岭山路', focus: 'mountain' }, { id: 'river', name: '碧水航道', focus: 'water' }],
+    routes: [
+      { id: 'ridge-route', name: '云岭山路', focus: 'mountain', description: '坡度较大，泥地、落叶和深雪会改变抓地力。' },
+      { id: 'river-route', name: '碧水航道', focus: 'water', description: '春夏需要浮航模块，冬季结冰后可直接横穿。' },
+    ],
   },
 };
 

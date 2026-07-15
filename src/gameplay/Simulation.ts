@@ -1,9 +1,10 @@
 import { ENEMIES, availableEnemyKinds } from '../content/enemies';
 import { WEAPONS } from '../content/weapons';
 import { AMMO_STRATEGIES, MOVEMENT_STRATEGIES } from './LoadoutStrategies';
+import { missionProgress, surfaceAt, weatherAt, type WeatherState } from './ExpeditionRules';
 import { RNG } from '../core/RNG';
 import type {
-  AbilityId, AmmoId, AssistLevel, ChassisId, EnemyKind, GameMode, GameOptions,
+  AbilityId, AmmoId, AssistLevel, BossVariant, ChassisId, EnemyKind, ExpeditionMissionId, GameMode, GameOptions,
   ReplayFrame, SurfaceId, ThemeId, Vec2, WeaponId,
 } from '../core/types';
 
@@ -34,6 +35,7 @@ export interface PlayerEntity {
   chassis: ChassisId;
   abilityCooldowns: Record<AbilityId, number>;
   activeAmmoIndex: 0 | 1;
+  surface: SurfaceId;
 }
 
 export interface EnemyEntity {
@@ -48,6 +50,7 @@ export interface EnemyEntity {
   cooldown: number;
   phase: number;
   marked: number;
+  bossVariant?: BossVariant;
 }
 
 export interface ProjectileEntity {
@@ -73,7 +76,7 @@ export interface PickupEntity {
   life: number;
 }
 
-export type WorldEventKind = 'none' | 'emp' | 'meteor' | 'supply';
+export type WorldEventKind = 'none' | 'emp' | 'meteor' | 'supply' | 'flood' | 'lightning' | 'leaf-gust' | 'snow-squall';
 
 export interface SimulationEvents {
   shot: { player: PlayerEntity; projectile: ProjectileEntity };
@@ -85,6 +88,7 @@ export interface SimulationEvents {
   ability: { player: PlayerEntity; ability: AbilityId };
   wave: { wave: number; boss: boolean };
   event: { kind: WorldEventKind; message: string };
+  mission: { missionId: ExpeditionMissionId };
   message: { title: string; body: string };
   gameOver: undefined;
 }
@@ -127,6 +131,11 @@ export class Simulation {
   rapidTimer = 0;
   multiTimer = 0;
   powerTimer = 0;
+  weather: WeatherState;
+  missionProgressValue = 0;
+  missionTarget = 0;
+  missionComplete = false;
+  missionCompletedAt = 0;
   private nextId = 1;
   private eventClock = 24;
   private replayClock = 0;
@@ -137,6 +146,7 @@ export class Simulation {
     this.options = options;
     this.rng = new RNG(options.seed);
     this.techRanks = techRanks;
+    this.weather = weatherAt(0, options.season ?? 'spring');
     const chassisHp = options.chassis === 'guardian' ? 25 : options.chassis === 'comet' ? -10 : 0;
     const hp = 100 + chassisHp + (techRanks.armor ?? 0) * 10;
     this.players.push(this.createPlayer(1, { x: options.coop ? -1.35 : 0, z: 5.7 }, hp));
@@ -162,6 +172,7 @@ export class Simulation {
       chassis: this.options.loadout?.chassis ?? this.options.chassis,
       abilityCooldowns: { shield: 0, repair: 0, dash: 0, storm: 0 },
       activeAmmoIndex: this.options.loadout?.activeAmmoIndex ?? 0,
+      surface: 'road',
     };
   }
 
@@ -181,6 +192,7 @@ export class Simulation {
     this.updatePickups(step);
     this.handleCollisions();
     this.updateWaves(step);
+    this.updateMission();
     this.recordReplay(step);
     this.checkGameOver();
   }
@@ -216,14 +228,23 @@ export class Simulation {
       const move = len(control.move) > 1 ? normalized(control.move) : control.move;
       const baseSpeed = player.chassis === 'comet' ? 6.3 : player.chassis === 'guardian' ? 4.5 : 5.4;
       const movement = this.options.loadout ? MOVEMENT_STRATEGIES[this.options.loadout.movement] : undefined;
-      const surface = this.currentSurface();
-      const movementBoost = movement ? movement.speed * movement.grip(surface) : 1;
+      const surface = this.currentSurface(player.pos);
+      player.surface = surface;
+      const deepWaterPenalty = surface === 'deep-water' && this.options.loadout?.movement !== 'amphibious' ? .22 : 1;
+      const movementBoost = (movement ? movement.speed * movement.grip(surface) : 1) * deepWaterPenalty;
       let speed = baseSpeed * (1 + (this.techRanks.engine ?? 0) * .04) * (player.boost > 0 ? 1.65 : 1);
       speed *= movementBoost;
       if (this.options.theme === 'neon-city' && Math.abs(player.pos.x) < 1.2) speed *= 1.18;
-      const response = (this.options.theme === 'aurora-ice' ? 3.8 : 11) * (movement?.response ?? 1);
+      const weatherSteering = this.options.biome ? this.weather.intensity * (1 - this.weatherSteering()) : 0;
+      const surfaceResponse = surface === 'ice' ? .38 : surface === 'deep-snow' ? .7 : surface === 'mud' ? .78 : surface === 'deep-water' ? .52 : 1;
+      const response = (this.options.theme === 'aurora-ice' ? 3.8 : 11) * (movement?.response ?? 1) * surfaceResponse * (1 - weatherSteering);
       player.vel.x += (move.x * speed - player.vel.x) * Math.min(1, response * dt);
       player.vel.z += (move.z * speed - player.vel.z) * Math.min(1, response * dt);
+      if (this.options.biome && this.options.season === 'autumn') player.vel.x += Math.sin(this.elapsed * .72) * this.weather.intensity * dt * 1.5;
+      if (this.options.biome && (surface === 'shallow-water' || surface === 'deep-water')) player.vel.z += Math.sin(this.elapsed * .55) * dt * .9;
+      if (surface === 'deep-water' && this.options.loadout?.movement !== 'amphibious') {
+        player.vel.x *= .88; player.vel.z *= .88;
+      }
       if (this.options.theme === 'toy-factory' && Math.abs(player.pos.z) < 2.2) player.vel.x += Math.sin(this.elapsed * .8) * dt * 3;
       player.pos.x = clamp(player.pos.x + player.vel.x * dt, -ARENA_X, ARENA_X);
       player.pos.z = clamp(player.pos.z + player.vel.z * dt, -ARENA_Z, ARENA_Z);
@@ -327,11 +348,12 @@ export class Simulation {
   }
 
   private fireEnemy(enemy: EnemyEntity, dir: Vec2, damage: number): void {
-    const count = enemy.kind === 'boss' ? 5 : 1;
+    const count = enemy.kind === 'boss' ? (enemy.bossVariant === 'tide-leviathan' ? 8 : 5) : 1;
     for (let i = 0; i < count; i += 1) {
-      const offset = count === 1 ? 0 : (i - 2) * .2;
+      const offset = enemy.bossVariant === 'tide-leviathan' ? i / count * Math.PI * 2 : count === 1 ? 0 : (i - 2) * .2;
       const c = Math.cos(offset); const s = Math.sin(offset);
-      const shotDir = { x: dir.x * c - dir.z * s, z: dir.x * s + dir.z * c };
+      const base = enemy.bossVariant === 'tide-leviathan' ? { x: 0, z: -1 } : dir;
+      const shotDir = { x: base.x * c - base.z * s, z: base.x * s + base.z * c };
       this.projectiles.push({
         id: this.nextId++, team: 'enemy', pos: { ...enemy.pos }, prev: { ...enemy.pos },
         vel: { x: shotDir.x * 8.3, z: shotDir.z * 8.3 }, radius: .18, damage,
@@ -401,7 +423,8 @@ export class Simulation {
     });
   }
 
-  private currentSurface(): SurfaceId {
+  private currentSurface(pos: Vec2 = { x: 0, z: 0 }): SurfaceId {
+    if (this.options.biome === 'mountain-sea-valley') return surfaceAt(pos, this.options.season ?? 'spring');
     if (this.options.theme === 'cloud-garden') return 'mud';
     if (this.options.theme === 'crystal-ocean') return 'shallow-water';
     if (this.options.theme === 'dino-canyon') return 'sand';
@@ -491,10 +514,12 @@ export class Simulation {
     this.enemies.push({
       id: this.nextId++, kind, pos: { ...pos }, vel: { x: 0, z: 0 }, hp, maxHp: hp,
       radius: def.radius, hitFlash: 0, cooldown: this.rng.range(.5, Math.max(.7, def.fireRate)), phase: this.rng.range(0, 8), marked: 0,
+      bossVariant: kind === 'boss' ? (this.options.route === 'river-route' ? 'tide-leviathan' : 'ridge-colossus') : undefined,
     });
   }
 
   private updateWorldEvent(dt: number): void {
+    if (this.options.biome === 'mountain-sea-valley') this.weather = weatherAt(this.elapsed, this.options.season ?? 'spring');
     if (this.options.mode === 'last-core') this.safeRadius = Math.max(4.2, 13.5 - this.elapsed * .022);
     this.eventClock -= dt;
     this.eventTimer -= dt;
@@ -502,20 +527,47 @@ export class Simulation {
     if (this.eventClock > 0 || this.wave < 2) return;
     this.eventClock = this.rng.range(28, 40);
     this.eventTimer = 8;
-    this.eventKind = this.rng.pick<WorldEventKind>(['emp', 'meteor', 'supply']);
+    const seasonalEvents: Record<NonNullable<GameOptions['season']>, WorldEventKind> = {
+      spring: 'flood', summer: 'lightning', autumn: 'leaf-gust', winter: 'snow-squall',
+    };
+    this.eventKind = this.options.biome && this.options.season
+      ? this.rng.pick<WorldEventKind>([seasonalEvents[this.options.season], 'meteor', 'supply'])
+      : this.rng.pick<WorldEventKind>(['emp', 'meteor', 'supply']);
     const message = this.eventKind === 'emp' ? '电磁风暴：技能恢复加速'
       : this.eventKind === 'meteor' ? '流星雨：留意地面预警圈'
-        : '补给信标：星核芯片已送达';
+        : this.eventKind === 'flood' ? '春汛上涨：河流推力增强，浮航模块最稳定'
+          : this.eventKind === 'lightning' ? '雷暴预警：闪电即将净化高地目标'
+            : this.eventKind === 'leaf-gust' ? '山谷叶风：横风将轻推所有机体'
+              : this.eventKind === 'snow-squall' ? '暴雪来临：深雪区域阻力暂时增大'
+                : '补给信标：星核芯片已送达';
     this.emit('event', { kind: this.eventKind, message });
     if (this.eventKind === 'supply') {
       this.pickups.push({ id: this.nextId++, kind: this.rng.pick(['rapid', 'multi', 'power', 'shield']), pos: { x: this.rng.range(-5, 5), z: this.rng.range(-3, 4) }, life: 15 });
     }
-    if (this.eventKind === 'meteor') {
+    if (this.eventKind === 'meteor' || this.eventKind === 'lightning') {
       for (let i = 0; i < 4; i += 1) {
         const pos = { x: this.rng.range(-9, 9), z: this.rng.range(-7, 6) };
         this.enemies.forEach((enemy) => { if (distance(enemy.pos, pos) < 2.3) enemy.hp -= 45; });
-        this.emit('hit', { pos, color: 0xff8b3d, heavy: true });
+        this.emit('hit', { pos, color: this.eventKind === 'lightning' ? 0xbba0ff : 0xff8b3d, heavy: true });
       }
+    }
+  }
+
+  private weatherSteering(): number {
+    const season = this.options.season ?? 'spring';
+    return season === 'spring' ? .9 : season === 'summer' ? .86 : season === 'autumn' ? .82 : .74;
+  }
+
+  private updateMission(): void {
+    const id = this.options.missionId;
+    if (!id) return;
+    const progress = missionProgress(id, this.repaired, this.wave, this.score);
+    this.missionProgressValue = progress.value;
+    this.missionTarget = progress.target;
+    if (progress.complete && !this.missionComplete) {
+      this.missionComplete = true;
+      this.missionCompletedAt = this.elapsed;
+      this.emit('mission', { missionId: id });
     }
   }
 

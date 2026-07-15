@@ -38,7 +38,7 @@
         </header>
 
         <div id="boss-hud" class="boss-hud is-hidden">
-          <div><span>区域霸主</span><b id="boss-hp-text">100%</b></div>
+          <div><span id="boss-name">区域霸主</span><b id="boss-hp-text">100%</b></div>
           <div class="boss-track"><i id="boss-hp-bar"></i></div>
         </div>
 
@@ -80,8 +80,14 @@
 
           <aside class="terrain-panel">
             <span class="terrain-kicker">目的地适配</span>
-            <h2>山海谷 · 春季</h2>
+            <h2 id="workshop-destination">山海谷 · 春季</h2>
+            <div id="season-switcher" class="season-switcher" aria-label="选择季节">
+              <button class="is-selected" data-season="spring">春</button><button data-season="summer">夏</button><button data-season="autumn">秋</button><button data-season="winter">冬</button>
+            </div>
             <p id="workshop-route-hint">河道水位上涨，浮航路线将开放。</p>
+            <div class="route-switcher" aria-label="选择路线"><button data-route="ridge-route"><i class="ph ph-mountains"></i><span>云岭山路</span></button><button class="is-selected" data-route="river-route"><i class="ph ph-waves"></i><span>碧水航道</span></button></div>
+            <div id="route-status" class="route-status">装备检查通过</div>
+            <div id="mission-selector" class="mission-selector" aria-label="选择任务"></div>
             <div class="terrain-ratings">
               <div id="rating-mountain"><span><i class="ph ph-mountains"></i>山地</span><em><i></i></em><b>3 / 5</b></div>
               <div id="rating-water"><span><i class="ph ph-waves"></i>水域</span><em><i></i></em><b>5 / 5</b></div>
