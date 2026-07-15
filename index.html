@@ -20,6 +20,7 @@
           <div class="pilot-status hud-glass">
             <div class="pilot-label"><span>P1 星火号</span><span id="hp-text">100 / 100</span></div>
             <div class="bar-track"><i id="hp-bar" class="bar-fill health"></i></div>
+            <div id="control-status" class="control-status">键鼠 / 触控就绪</div>
             <div id="p2-status" class="p2-status is-hidden">
               <div class="pilot-label"><span>P2 极光号</span><span id="p2-hp-text">100 / 100</span></div>
               <div class="bar-track"><i id="p2-hp-bar" class="bar-fill p2"></i></div>
@@ -28,7 +29,7 @@
           <div class="run-status">
             <div id="wave-label" class="wave-label">第 1 波</div>
             <strong id="score-label">000000</strong>
-            <div class="run-meta"><span id="enemy-label">伙伴机 0</span><span id="combo-label">连击 x1</span></div>
+            <div class="run-meta"><span id="enemy-label">伙伴机 0</span><span id="combo-label">连击 x1</span><span id="quality-label">均衡 · 60 FPS</span></div>
           </div>
           <div class="mission-status hud-glass">
             <span class="eyebrow">当前任务</span>
@@ -142,6 +143,7 @@
               <div class="choice-row">
                 <label><span>辅助驾驶</span><select id="assist-select"><option value="easy">轻松 · 自动瞄准</option><option value="standard" selected>标准 · 瞄准辅助</option><option value="expert">高手 · 完全手动</option></select></label>
                 <label><span>出发队伍</span><select id="team-select"><option value="solo">单人</option><option value="coop">双人同屏</option></select></label>
+                <label><span>画质模式</span><select id="quality-select"><option value="auto">自动调节</option><option value="high">高画质</option><option value="balanced">均衡</option><option value="battery">省电</option></select></label>
               </div>
 
               <div class="theme-heading"><span>主题场景</span><small id="theme-mechanic">场景机制 · 加速电轨</small></div>

@@ -128,6 +128,7 @@ export interface RunSummary {
   title: string;
   season?: SeasonId;
   missionId?: ExpeditionMissionId;
+  missionComplete?: boolean;
 }
 
 export interface ReplayFrame {

@@ -2,6 +2,7 @@ import type { AbilityId, Vec2 } from '../core/types';
 import type { ControlFrame } from '../gameplay/Simulation';
 
 interface PointerState { x: number; y: number; active: boolean }
+export interface GamepadStatus { slot: 1 | 2; connected: boolean; name: string }
 
 const ZERO: Vec2 = { x: 0, z: 0 };
 
@@ -10,6 +11,8 @@ export class InputManager {
   private pressedAbilities = new Set<AbilityId>();
   private ammoSwitchPressed = false;
   private padSwitchHeld = [false, false];
+  private padSlots: Array<number | undefined> = [undefined, undefined];
+  private gamepadListener?: (status: GamepadStatus) => void;
   private mouse: PointerState = { x: 0, y: 0, active: false };
   private touchMove: Vec2 = { ...ZERO };
   private touchAim: Vec2 = { x: 0, z: -1 };
@@ -24,11 +27,29 @@ export class InputManager {
     canvas.addEventListener('pointerdown', this.onPointerDown);
     window.addEventListener('pointerup', this.onPointerUp);
     canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+    window.addEventListener('gamepadconnected', this.onGamepadConnected);
+    window.addEventListener('gamepaddisconnected', this.onGamepadDisconnected);
     this.bindTouchControls();
+    Array.from(navigator.getGamepads?.() ?? []).forEach((pad) => { if (pad) this.assignGamepad(pad); });
   }
 
   setProjection(fn: (x: number, y: number) => Vec2 | null): void { this.screenToWorld = fn; }
   setPlayerWorld(pos: Vec2): void { this.playerWorld = pos; }
+  setGamepadListener(listener: (status: GamepadStatus) => void): void {
+    this.gamepadListener = listener;
+    this.padSlots.forEach((index, slot) => {
+      const pad = index === undefined ? undefined : navigator.getGamepads?.()[index];
+      if (pad) listener({ slot: (slot + 1) as 1 | 2, connected: true, name: this.shortPadName(pad.id) });
+    });
+  }
+
+  rumble(slot: 1 | 2, strength = .35, duration = 70): void {
+    const index = this.padSlots[slot - 1];
+    const pad = index === undefined ? undefined : navigator.getGamepads?.()[index];
+    const actuator = (pad as (Gamepad & { vibrationActuator?: { playEffect?: (type: string, params: object) => Promise<unknown> } }) | undefined)?.vibrationActuator;
+    void actuator?.playEffect?.('dual-rumble', { duration, strongMagnitude: Math.min(1, strength), weakMagnitude: Math.min(1, strength * .65) });
+    if (pad && slot === 1 && navigator.vibrate) navigator.vibrate(Math.min(duration, 45));
+  }
 
   frame(slot: 1 | 2): ControlFrame {
     const gamepad = this.readGamepad(slot - 1);
@@ -63,9 +84,14 @@ export class InputManager {
   }
 
   private readGamepad(index: number): { move: Vec2; aim: Vec2; firing: boolean; abilities: Set<AbilityId>; switchAmmo: boolean } {
-    const pad = navigator.getGamepads?.()[index];
+    const gamepadIndex = this.padSlots[index];
+    const pad = gamepadIndex === undefined ? undefined : navigator.getGamepads?.()[gamepadIndex];
     if (!pad) return { move: { ...ZERO }, aim: { ...ZERO }, firing: false, abilities: new Set(), switchAmmo: false };
-    const dead = (value = 0) => Math.abs(value) < .16 ? 0 : value;
+    const dead = (value = 0) => {
+      const magnitude = Math.abs(value);
+      if (magnitude < .14) return 0;
+      return Math.sign(value) * Math.pow((magnitude - .14) / .86, 1.12);
+    };
     const abilities = new Set<AbilityId>();
     if (pad.buttons[4]?.pressed) abilities.add('shield');
     if (pad.buttons[5]?.pressed) abilities.add('repair');
@@ -80,29 +106,40 @@ export class InputManager {
   }
 
   private bindTouchControls(): void {
+    const zone = document.querySelector<HTMLElement>('.move-zone');
     const stick = document.querySelector<HTMLElement>('[data-control="move"]');
     const knob = stick?.querySelector<HTMLElement>('.stick-knob');
     let stickPointer = -1;
+    let origin = { x: 0, y: 0 };
     const moveStick = (event: PointerEvent) => {
       if (!stick || event.pointerId !== stickPointer) return;
-      const box = stick.getBoundingClientRect();
-      const dx = event.clientX - (box.left + box.width / 2);
-      const dy = event.clientY - (box.top + box.height / 2);
-      const radius = box.width * .32;
-      const scale = Math.min(1, Math.hypot(dx, dy) / radius);
+      const dx = event.clientX - origin.x;
+      const dy = event.clientY - origin.y;
+      const radius = stick.getBoundingClientRect().width * .34;
+      const raw = Math.min(1, Math.hypot(dx, dy) / radius);
+      const scale = raw < .055 ? 0 : Math.pow(raw, 1.18);
       const angle = Math.atan2(dy, dx);
       this.touchMove = { x: Math.cos(angle) * scale, z: Math.sin(angle) * scale };
       if (knob) knob.style.transform = `translate(${Math.cos(angle) * scale * radius}px, ${Math.sin(angle) * scale * radius}px)`;
     };
-    stick?.addEventListener('pointerdown', (event) => { stickPointer = event.pointerId; stick.setPointerCapture(event.pointerId); moveStick(event); });
-    stick?.addEventListener('pointermove', moveStick);
+    zone?.addEventListener('pointerdown', (event) => {
+      if (!stick || stickPointer >= 0) return;
+      stickPointer = event.pointerId; origin = { x: event.clientX, y: event.clientY };
+      const zoneBox = zone.getBoundingClientRect();
+      const offsetX = Math.max(-28, Math.min(28, origin.x - (zoneBox.left + zoneBox.width / 2)));
+      const offsetY = Math.max(-22, Math.min(22, origin.y - (zoneBox.top + zoneBox.height / 2)));
+      stick.style.transform = `translate(${offsetX}px, ${offsetY}px)`; stick.classList.add('is-active');
+      zone.setPointerCapture(event.pointerId); moveStick(event); this.haptic(12);
+    });
+    zone?.addEventListener('pointermove', moveStick);
     const endStick = (event: PointerEvent) => {
       if (event.pointerId !== stickPointer) return;
       stickPointer = -1; this.touchMove = { ...ZERO };
       if (knob) knob.style.transform = 'translate(0, 0)';
+      if (stick) { stick.style.transform = 'translate(0, 0)'; stick.classList.remove('is-active'); }
     };
-    stick?.addEventListener('pointerup', endStick);
-    stick?.addEventListener('pointercancel', endStick);
+    zone?.addEventListener('pointerup', endStick);
+    zone?.addEventListener('pointercancel', endStick);
 
     const fire = document.querySelector<HTMLElement>('[data-control="fire"]');
     let firePointer = -1;
@@ -115,12 +152,13 @@ export class InputManager {
       fire.style.setProperty('--aim-x', `${Math.max(-22, Math.min(22, dx))}px`);
       fire.style.setProperty('--aim-y', `${Math.max(-22, Math.min(22, dy))}px`);
     };
-    fire?.addEventListener('pointerdown', (event) => { firePointer = event.pointerId; this.touchFiring = true; fire.setPointerCapture(event.pointerId); moveFire(event); });
+    fire?.addEventListener('pointerdown', (event) => { firePointer = event.pointerId; this.touchFiring = true; fire.setPointerCapture(event.pointerId); fire.classList.add('is-aiming'); moveFire(event); this.haptic(18); });
     fire?.addEventListener('pointermove', moveFire);
     const endFire = (event: PointerEvent) => {
       if (event.pointerId !== firePointer) return;
       firePointer = -1; this.touchFiring = false;
       fire?.style.setProperty('--aim-x', '0px'); fire?.style.setProperty('--aim-y', '0px');
+      fire?.classList.remove('is-aiming');
     };
     fire?.addEventListener('pointerup', endFire);
     fire?.addEventListener('pointercancel', endFire);
@@ -130,12 +168,31 @@ export class InputManager {
         event.preventDefault();
         this.pressedAbilities.add(button.dataset.ability as AbilityId);
         button.classList.add('is-pressed');
+        this.haptic(24);
       });
       button.addEventListener('pointerup', () => button.classList.remove('is-pressed'));
       button.addEventListener('pointercancel', () => button.classList.remove('is-pressed'));
     });
-    document.querySelector<HTMLElement>('[data-control="ammo-switch"]')?.addEventListener('pointerdown', (event) => { event.preventDefault(); this.ammoSwitchPressed = true; });
+    document.querySelector<HTMLElement>('[data-control="ammo-switch"]')?.addEventListener('pointerdown', (event) => { event.preventDefault(); this.ammoSwitchPressed = true; this.haptic(18); });
   }
+
+  private assignGamepad(pad: Gamepad): void {
+    if (this.padSlots.includes(pad.index)) return;
+    const free = this.padSlots.findIndex((value) => value === undefined);
+    if (free < 0) return;
+    this.padSlots[free] = pad.index;
+    this.gamepadListener?.({ slot: (free + 1) as 1 | 2, connected: true, name: this.shortPadName(pad.id) });
+  }
+
+  private shortPadName(id: string): string { return id.replace(/\([^)]*\)/g, '').replace(/vendor:|product:/gi, '').trim().slice(0, 28) || '蓝牙手柄'; }
+  private haptic(duration: number): void { if (navigator.vibrate) navigator.vibrate(duration); }
+  private onGamepadConnected = (event: GamepadEvent): void => this.assignGamepad(event.gamepad);
+  private onGamepadDisconnected = (event: GamepadEvent): void => {
+    const slot = this.padSlots.findIndex((index) => index === event.gamepad.index);
+    if (slot < 0) return;
+    this.padSlots[slot] = undefined; this.padSwitchHeld[slot] = false;
+    this.gamepadListener?.({ slot: (slot + 1) as 1 | 2, connected: false, name: this.shortPadName(event.gamepad.id) });
+  };
 
   private onKeyDown = (event: KeyboardEvent): void => {
     this.keys.add(event.code);

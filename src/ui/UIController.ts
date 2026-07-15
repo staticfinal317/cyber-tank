@@ -6,6 +6,8 @@ import type { ChassisId, ExpeditionMissionId, GameOptions, LoadoutPreset, Replay
 import { seedFromDate } from '../core/RNG';
 import type { Simulation } from '../gameplay/Simulation';
 import { WorkshopController } from '../workshop/WorkshopController';
+import type { GamepadStatus } from '../input/InputManager';
+import type { QualitySetting, RenderQuality } from '../platform/PerformanceGovernor';
 
 type PanelName = 'tech' | 'armory' | 'leaderboard' | 'replays';
 
@@ -25,6 +27,7 @@ export interface UIActions {
   testDrive: (options: GameOptions) => void;
   launchLoadout: (options: GameOptions) => void;
   unlockPart: (category: 'movement' | 'ammo' | 'tool' | 'appearance', id: string, cost: number) => Promise<boolean>;
+  setQuality: (quality: QualitySetting) => void;
 }
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -65,10 +68,12 @@ export class UIController {
     if (!save.unlockedChassis.includes(this.options.chassis)) this.options.chassis = save.unlockedChassis[0] ?? 'spark';
     byId('weapon-label').textContent = WEAPONS[this.options.weapon].name;
     byId('chassis-label').textContent = CHASSIS_NAMES[this.options.chassis];
+    byId<HTMLSelectElement>('quality-select').value = save.settings.quality;
     if (this.panel) this.renderPanel(this.panel);
   }
 
   showGame(options?: GameOptions): void {
+    this.resetStageScroll();
     this.workshop.close();
     byId('main-menu').classList.add('is-hidden');
     byId('game-over').classList.add('is-hidden');
@@ -84,6 +89,7 @@ export class UIController {
   }
 
   showHome(): void {
+    this.resetStageScroll();
     this.workshop.close();
     byId('main-menu').classList.remove('is-hidden');
     byId('game-over').classList.add('is-hidden');
@@ -105,6 +111,7 @@ export class UIController {
   }
 
   returnToWorkshop(save: SaveData, message?: string): void {
+    this.resetStageScroll();
     byId('hud').classList.add('is-hidden'); byId('touch-controls').classList.add('is-hidden');
     byId('pause-button').classList.add('is-hidden'); byId('boss-hud').classList.add('is-hidden');
     this.workshop.open(save);
@@ -152,13 +159,14 @@ export class UIController {
   }
 
   showResult(summary: RunSummary): void {
+    this.resetStageScroll();
     byId('hud').classList.add('is-hidden'); byId('touch-controls').classList.add('is-hidden');
     byId('pause-button').classList.add('is-hidden'); byId('boss-hud').classList.add('is-hidden');
     byId('game-over').classList.remove('is-hidden');
     const mission = summary.missionId ? EXPEDITION_MISSIONS[summary.missionId] : undefined;
-    byId('result-kicker').textContent = mission ? `${SEASONS[mission.season].name}远征完成` : summary.wave >= 5 ? '闪耀任务完成' : '本次探索完成';
+    byId('result-kicker').textContent = mission && summary.missionComplete ? `${SEASONS[mission.season].name}远征完成` : mission ? `${SEASONS[mission.season].name}探索结束` : summary.wave >= 5 ? '闪耀任务完成' : '本次探索完成';
     byId('result-title').textContent = summary.title;
-    byId('result-message').textContent = mission ? `${mission.name}目标达成，新路线与任务奖励已记录。` : summary.wave >= 5 ? '你已经能独立守护一座星核基地。' : '带着新收集的星屑回来，下次会走得更远。';
+    byId('result-message').textContent = mission && summary.missionComplete ? `${mission.name}目标达成，新路线与任务奖励已记录。` : mission ? `${mission.name}还差一点完成，已经获得的星屑和路线发现仍会保留。` : summary.wave >= 5 ? '你已经能独立守护一座星核基地。' : '带着新收集的星屑回来，下次会走得更远。';
     byId('result-score').textContent = summary.score.toLocaleString('zh-CN');
     byId('result-wave').textContent = summary.wave.toString();
     byId('result-repaired').textContent = summary.repaired.toString();
@@ -171,6 +179,16 @@ export class UIController {
     byId('toast-stack').append(toast);
     requestAnimationFrame(() => toast.classList.add('is-visible'));
     window.setTimeout(() => { toast.classList.remove('is-visible'); window.setTimeout(() => toast.remove(), 300); }, 2600);
+  }
+
+  updatePerformance(quality: RenderQuality, fps: number): void {
+    const label = quality === 'high' ? '高画质' : quality === 'balanced' ? '均衡' : '省电';
+    byId('quality-label').textContent = `${label} · ${Math.max(1, fps)} FPS`;
+  }
+
+  updateGamepad(status: GamepadStatus): void {
+    byId('control-status').textContent = status.connected ? `P${status.slot} 手柄 · ${status.name}` : `P${status.slot} 手柄已断开`;
+    this.toast(status.connected ? `P${status.slot} 手柄已连接` : `P${status.slot} 手柄断开`, status.connected ? `${status.name} 已完成玩家归属` : '可以继续使用触控或键盘，重新连接后会自动归队');
   }
 
   floatText(x: number, y: number, text: string, critical = false): void {
@@ -186,6 +204,7 @@ export class UIController {
     }));
     byId<HTMLSelectElement>('assist-select').addEventListener('change', (event) => { this.options.assist = (event.target as HTMLSelectElement).value as GameOptions['assist']; });
     byId<HTMLSelectElement>('team-select').addEventListener('change', (event) => { this.options.coop = (event.target as HTMLSelectElement).value === 'coop'; });
+    byId<HTMLSelectElement>('quality-select').addEventListener('change', (event) => this.actions.setQuality((event.target as HTMLSelectElement).value as QualitySetting));
     byId('start-button').addEventListener('click', () => this.openWorkshop());
     document.querySelectorAll<HTMLButtonElement>('[data-panel]').forEach((button) => button.addEventListener('click', () => this.openPanel(button.dataset.panel as PanelName)));
     byId('panel-close').addEventListener('click', () => byId('side-panel').classList.add('is-hidden'));
@@ -278,6 +297,7 @@ export class UIController {
 
   private openWorkshop(): void {
     if (!this.save) return;
+    this.resetStageScroll();
     byId('main-menu').classList.add('is-hidden');
     byId('side-panel').classList.add('is-hidden');
     this.workshop.open(this.save);
@@ -298,6 +318,11 @@ export class UIController {
   private updateInputHint(): void {
     const touch = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
     byId('control-hint').textContent = touch ? '手机 / Pad 双摇杆' : '键鼠 / 蓝牙手柄';
+  }
+
+  private resetStageScroll(): void {
+    const stage = document.querySelector<HTMLElement>('.game-stage');
+    if (stage) { stage.scrollTop = 0; stage.scrollLeft = 0; }
   }
 
   private eventName(kind: Simulation['eventKind']): string {

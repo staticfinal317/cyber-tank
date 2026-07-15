@@ -10,6 +10,7 @@ import { InputManager } from '../input/InputManager';
 import { LocalSaveRepository } from '../persistence/LocalSaveRepository';
 import { ThreeRenderer } from '../render/ThreeRenderer';
 import { UIController } from '../ui/UIController';
+import { PerformanceGovernor } from '../platform/PerformanceGovernor';
 
 export class Game {
   private readonly repo = new LocalSaveRepository();
@@ -25,6 +26,9 @@ export class Game {
   private resultHandled = false;
   private workshopActive = false;
   private workshopSeason?: SeasonId;
+  private performance = new PerformanceGovernor('auto');
+  private performanceHudClock = 0;
+  private simulationAccumulator = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new ThreeRenderer(canvas, THEMES['neon-city']);
@@ -46,12 +50,16 @@ export class Game {
       testDrive: (options) => this.start(options),
       launchLoadout: (options) => this.start(options),
       unlockPart: (category, id, cost) => this.unlockPart(category, id, cost),
+      setQuality: (quality) => void this.setQuality(quality),
     });
+    this.input.setGamepadListener((status) => this.ui.updateGamepad(status));
   }
 
   async init(): Promise<void> {
     this.save = await this.repo.load();
     this.audio.enabled = this.save.settings.sfx;
+    this.renderer.setQuality(this.performance.setSetting(this.save.settings.quality));
+    this.ui.updatePerformance(this.performance.level, this.performance.fps);
     this.ui.setSave(this.save);
     this.loop(performance.now());
   }
@@ -62,6 +70,7 @@ export class Game {
     this.resultHandled = false;
     this.paused = false;
     this.workshopActive = false;
+    this.simulationAccumulator = 0;
     if (options.biome === 'mountain-sea-valley') this.renderer.setExpeditionSeason(options.season ?? 'spring');
     else this.renderer.setTheme(options.theme);
     this.simulation = new Simulation(options, this.save.techRanks);
@@ -116,6 +125,13 @@ export class Game {
     return true;
   }
 
+  private async setQuality(setting: SaveData['settings']['quality']): Promise<void> {
+    this.save.settings.quality = setting;
+    const level = this.performance.setSetting(setting); this.renderer.setQuality(level); this.ui.updatePerformance(level, this.performance.fps);
+    await this.repo.save(this.save);
+    this.ui.toast('画质模式已更新', setting === 'auto' ? '会根据设备帧率自动平衡清晰度和特效' : setting === 'high' ? '高品质光影与粒子已开启' : setting === 'balanced' ? '清晰度与续航保持平衡' : '已降低分辨率与粒子数量以延长续航');
+  }
+
   private playReplay(replay: ReplayData): void {
     this.simulation = undefined;
     this.renderer.setTheme(replay.options.theme);
@@ -127,6 +143,7 @@ export class Game {
     sim.on('shot', ({ player, projectile }) => {
       this.renderer.muzzle(player.pos, projectile.color);
       this.audio.shot(player.weapon === 'rail' ? .65 : 1);
+      this.input.rumble(player.slot, .18, 38);
     });
     sim.on('hit', ({ pos, color, heavy }) => { this.renderer.burst(pos, color, heavy); this.audio.hit(heavy); });
     sim.on('repaired', ({ enemy, pos, score }) => {
@@ -143,8 +160,8 @@ export class Game {
       this.audio.pickup();
       this.ui.toast('强化芯片', pickupName(kind));
     });
-    sim.on('playerHit', ({ player }) => { this.renderer.burst(player.pos, 0xff5d75, false); this.audio.hit(false); });
-    sim.on('ability', ({ player, ability }) => { this.renderer.ability(player.pos, abilityColor(ability)); this.audio.ability(); });
+    sim.on('playerHit', ({ player }) => { this.renderer.burst(player.pos, 0xff5d75, false); this.audio.hit(false); this.input.rumble(player.slot, .58, 120); });
+    sim.on('ability', ({ player, ability }) => { this.renderer.ability(player.pos, abilityColor(ability)); this.audio.ability(); this.input.rumble(player.slot, ability === 'storm' ? .8 : .38, ability === 'storm' ? 180 : 80); });
     sim.on('wave', ({ wave, boss }) => {
       this.audio.wave();
       this.ui.toast(
@@ -180,6 +197,7 @@ export class Game {
       title,
       season: sim.options.season,
       missionId: sim.options.missionId,
+      missionComplete: sim.missionComplete,
     };
     const replay: ReplayData = {
       id: crypto.randomUUID(), createdAt: new Date().toISOString(), options: sim.options,
@@ -249,13 +267,23 @@ export class Game {
   }
 
   private loop = (time: number): void => {
-    const dt = Math.min(.05, Math.max(0, (time - this.lastTime) / 1000));
+    const rawDt = Math.max(0, (time - this.lastTime) / 1000);
+    const dt = Math.min(.05, rawDt);
     this.lastTime = time;
+    const qualityChange = this.performance.sample(rawDt || 1 / 60);
+    if (qualityChange) this.renderer.setQuality(qualityChange);
+    this.performanceHudClock -= dt;
+    if (this.performanceHudClock <= 0) { this.performanceHudClock = .75; this.ui.updatePerformance(this.performance.level, this.performance.fps); }
     const sim = this.simulation;
     if (sim && !this.paused && !sim.over) {
       const p1 = sim.players[0];
       if (p1) this.input.setPlayerWorld(p1.pos);
-      sim.update(dt, [this.input.frame(1), this.input.frame(2)]);
+      this.simulationAccumulator = Math.min(.1, this.simulationAccumulator + dt);
+      const fixedStep = 1 / 60;
+      while (this.simulationAccumulator >= fixedStep) {
+        sim.update(fixedStep, [this.input.frame(1), this.input.frame(2)]);
+        this.simulationAccumulator -= fixedStep;
+      }
       this.ui.update(sim);
       if (sim.options.testDrive && sim.elapsed >= 20) {
         const movement = sim.options.loadout?.movement;

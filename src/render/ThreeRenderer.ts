@@ -9,6 +9,7 @@ import { THEMES } from '../content/themes';
 import { MOVEMENT_MODULES, PAINTS, SEASONS } from '../content/expedition';
 import type { MovementModuleId, SeasonId, TankLoadout, ThemeDefinition, Vec2 } from '../core/types';
 import type { EnemyEntity, PickupEntity, PlayerEntity, ProjectileEntity, Simulation } from '../gameplay/Simulation';
+import type { RenderQuality } from '../platform/PerformanceGovernor';
 
 interface Particle {
   mesh: THREE.Mesh;
@@ -17,6 +18,8 @@ interface Particle {
   maxLife: number;
   spin: THREE.Vector3;
 }
+
+interface TrailMark { mesh: THREE.Mesh; life: number; maxLife: number; expanding: boolean }
 
 function material(color: number, emissive = color, intensity = .65, roughness = .32): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({ color, emissive, emissiveIntensity: intensity, roughness, metalness: .7 });
@@ -55,6 +58,8 @@ export class ThreeRenderer {
   private readonly bulletMeshes = new Map<number, THREE.Mesh>();
   private readonly pickupMeshes = new Map<number, THREE.Group>();
   private readonly particles: Particle[] = [];
+  private readonly trailMarks: TrailMark[] = [];
+  private readonly lastTrailPositions = new Map<number, Vec2>();
   private readonly world = new THREE.Group();
   private readonly entityRoot = new THREE.Group();
   private readonly effectRoot = new THREE.Group();
@@ -77,6 +82,8 @@ export class ThreeRenderer {
   private workshopPointerX = 0;
   private expeditionSeason?: SeasonId;
   private weatherParticles: THREE.Mesh[] = [];
+  private quality: RenderQuality = 'balanced';
+  private particleBudget = 160;
 
   constructor(private readonly canvas: HTMLCanvasElement, private theme: ThemeDefinition) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
@@ -120,6 +127,15 @@ export class ThreeRenderer {
     this.clearEntities();
   }
 
+  setQuality(quality: RenderQuality): void {
+    this.quality = quality;
+    this.particleBudget = quality === 'high' ? 280 : quality === 'balanced' ? 160 : 80;
+    const ratio = Math.min(window.devicePixelRatio, quality === 'high' ? 1.8 : quality === 'balanced' ? 1.35 : 1);
+    this.renderer.setPixelRatio(ratio); this.composer.setPixelRatio(ratio);
+    this.renderer.shadowMap.enabled = quality !== 'battery';
+    this.applyQualityVisuals(); this.resize();
+  }
+
   clearSimulation(): void {
     this.simulation = undefined;
     this.clearEntities();
@@ -155,6 +171,7 @@ export class ThreeRenderer {
     this.theme = THEMES[id];
     while (this.world.children.length) this.world.remove(this.world.children[0]!);
     this.buildWorld(this.theme);
+    this.applyQualityVisuals();
   }
 
   setExpeditionSeason(season: SeasonId): void {
@@ -164,6 +181,7 @@ export class ThreeRenderer {
     this.bloom.threshold = .7; this.bloom.strength = season === 'summer' ? .64 : .52; this.bloom.radius = .48;
     while (this.world.children.length) this.world.remove(this.world.children[0]!);
     this.buildExpeditionWorld(season);
+    this.applyQualityVisuals();
   }
 
   showWorkshop(loadout: TankLoadout, season: SeasonId = 'spring'): void {
@@ -175,6 +193,7 @@ export class ThreeRenderer {
     while (this.world.children.length) this.world.remove(this.world.children[0]!);
     this.expeditionSeason = season;
     this.buildWorkshop(loadout, season);
+    this.applyQualityVisuals();
   }
 
   updateWorkshopLoadout(loadout: TankLoadout): void {
@@ -194,6 +213,7 @@ export class ThreeRenderer {
     if (this.simulation) this.sync(this.simulation);
     this.updateReplay();
     this.updateParticles(dt);
+    this.updateTrailMarks(dt);
     const shake = this.shakePower;
     this.shakePower = Math.max(0, this.shakePower - dt * 3.8);
     const x = (Math.random() - .5) * shake;
@@ -231,7 +251,8 @@ export class ThreeRenderer {
   }
 
   burst(pos: Vec2, color: number, heavy = false): void {
-    const count = heavy ? 32 : 10;
+    const desired = heavy ? (this.quality === 'battery' ? 16 : 32) : (this.quality === 'battery' ? 6 : 10);
+    const count = Math.max(0, Math.min(desired, this.particleBudget - this.particles.length));
     for (let i = 0; i < count; i += 1) {
       const isDebris = i % 3 === 0;
       const geometry = isDebris ? new THREE.BoxGeometry(.12, .1, .2) : new THREE.SphereGeometry(.07, 5, 4);
@@ -403,7 +424,8 @@ export class ThreeRenderer {
       if (particle.position.y < .05 || particle.position.x > 15) {
         particle.position.x = -14 + Math.random() * 28; particle.position.y = 6 + Math.random() * 6; particle.position.z = -12 + Math.random() * 24;
       }
-      particle.visible = index / this.weatherParticles.length < .32 + intensity * .68;
+      const qualityRatio = this.quality === 'high' ? 1 : this.quality === 'balanced' ? .7 : .38;
+      particle.visible = index / this.weatherParticles.length < (.32 + intensity * .68) * qualityRatio;
     });
     if (this.simulation?.weather.warning && this.expeditionSeason === 'summer') {
       const pulse = .82 + Math.max(0, Math.sin(this.elapsed * 9)) * .38;
@@ -545,6 +567,7 @@ export class ThreeRenderer {
         if (child instanceof THREE.Mesh && child !== shield) child.visible = player.invulnerable > 0 ? Math.sin(this.elapsed * 35) > -.15 : true;
       });
       if (shield) { shield.visible = player.shield > 0; shield.rotation.y += .025; }
+      if (player.alive) this.spawnSurfaceTrail(player);
     });
 
     sim.enemies.forEach((enemy) => {
@@ -722,6 +745,58 @@ export class ThreeRenderer {
     }
   }
 
+  private spawnSurfaceTrail(player: PlayerEntity): void {
+    const previous = this.lastTrailPositions.get(player.id);
+    if (previous && Math.hypot(player.pos.x - previous.x, player.pos.z - previous.z) < (this.quality === 'battery' ? .78 : .52)) return;
+    this.lastTrailPositions.set(player.id, { ...player.pos });
+    const water = player.surface === 'shallow-water' || player.surface === 'deep-water';
+    const color = water ? 0x8eefff : player.surface === 'mud' ? 0x6a4228 : player.surface === 'sand' ? 0xe3bc72 : player.surface === 'ice' ? 0xb9f5ff : player.surface === 'deep-snow' ? 0xe9fbff : 0x4fe8ff;
+    const life = water ? .58 : player.surface === 'road' ? 1.2 : 2.4;
+    const angle = Math.atan2(player.aim.x, player.aim.z);
+    const count = water || this.quality === 'battery' ? 1 : 2;
+    for (let i = 0; i < count; i += 1) {
+      const geometry = water ? new THREE.RingGeometry(.18, .28, 24) : new THREE.PlaneGeometry(.18, .58);
+      const mark = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: water ? .66 : .24, side: THREE.DoubleSide, depthWrite: false, blending: water ? THREE.AdditiveBlending : THREE.NormalBlending }));
+      mark.rotation.x = -Math.PI / 2; mark.rotation.z = -angle;
+      const side = count === 2 ? (i === 0 ? -.48 : .48) : 0;
+      mark.position.set(player.pos.x + Math.cos(angle) * side, .018, player.pos.z - Math.sin(angle) * side);
+      this.effectRoot.add(mark); this.trailMarks.push({ mesh: mark, life, maxLife: life, expanding: water });
+    }
+    if ((water || player.surface === 'mud' || player.surface === 'deep-snow') && this.particles.length < this.particleBudget && Math.random() < .45) {
+      const amount = this.quality === 'high' ? 4 : 2;
+      for (let i = 0; i < amount; i += 1) {
+        const mesh = new THREE.Mesh(new THREE.SphereGeometry(.035, 5, 4), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .75 }));
+        mesh.position.set(player.pos.x + (Math.random() - .5) * .8, .18, player.pos.z + (Math.random() - .5) * .8); this.effectRoot.add(mesh);
+        const maxLife = .34 + Math.random() * .22;
+        this.particles.push({ mesh, velocity: new THREE.Vector3((Math.random() - .5) * 1.8, 1.2 + Math.random() * 1.6, (Math.random() - .5) * 1.8), life: maxLife, maxLife, spin: new THREE.Vector3() });
+      }
+    }
+    const limit = this.quality === 'high' ? 180 : this.quality === 'balanced' ? 110 : 55;
+    while (this.trailMarks.length > limit) this.removeTrailMark(0);
+  }
+
+  private updateTrailMarks(dt: number): void {
+    for (let i = this.trailMarks.length - 1; i >= 0; i -= 1) {
+      const mark = this.trailMarks[i]; if (!mark) continue;
+      mark.life -= dt; const ratio = Math.max(0, mark.life / mark.maxLife);
+      (mark.mesh.material as THREE.MeshBasicMaterial).opacity = (mark.expanding ? .62 : .25) * ratio;
+      if (mark.expanding) mark.mesh.scale.addScalar(dt * 1.8);
+      if (mark.life <= 0) this.removeTrailMark(i);
+    }
+  }
+
+  private removeTrailMark(index: number): void {
+    const mark = this.trailMarks[index]; if (!mark) return;
+    this.effectRoot.remove(mark.mesh); mark.mesh.geometry.dispose(); (mark.mesh.material as THREE.Material).dispose(); this.trailMarks.splice(index, 1);
+  }
+
+  private applyQualityVisuals(): void {
+    const factor = this.quality === 'high' ? 1 : this.quality === 'balanced' ? .74 : .42;
+    const base = this.viewMode === 'workshop' ? .3 : this.expeditionSeason === 'summer' ? .64 : .54;
+    this.bloom.strength = base * factor; this.bloom.radius = this.quality === 'high' ? .48 : this.quality === 'balanced' ? .35 : .18;
+    this.bloom.enabled = this.quality !== 'battery';
+  }
+
   private updateReplay(): void {
     if (!this.replayFrames.length || !this.replayGhosts.length) return;
     const duration = this.replayFrames[this.replayFrames.length - 1]?.t ?? 0;
@@ -769,5 +844,7 @@ export class ThreeRenderer {
   private clearEntities(): void {
     this.playerMeshes.clear(); this.enemyMeshes.clear(); this.bulletMeshes.clear(); this.pickupMeshes.clear();
     while (this.entityRoot.children.length) this.entityRoot.remove(this.entityRoot.children[0]!);
+    while (this.trailMarks.length) this.removeTrailMark(this.trailMarks.length - 1);
+    this.lastTrailPositions.clear();
   }
 }
