@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#07101b" />
+    <meta name="description" content="面向 6–12 岁儿童与家庭的 3D 同屏协作坦克游戏。" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <title>赛博坦克 · 星核远征</title>
+  </head>
+  <body>
+    <main id="app">
+      <section class="game-stage" aria-label="赛博坦克游戏画面">
+        <canvas id="game-canvas"></canvas>
+        <div class="screen-fx" aria-hidden="true"></div>
+        <div id="damage-layer" class="damage-layer" aria-live="polite"></div>
+
+        <header id="hud" class="hud is-hidden">
+          <div class="pilot-status hud-glass">
+            <div class="pilot-label"><span>P1 星火号</span><span id="hp-text">100 / 100</span></div>
+            <div class="bar-track"><i id="hp-bar" class="bar-fill health"></i></div>
+            <div id="p2-status" class="p2-status is-hidden">
+              <div class="pilot-label"><span>P2 极光号</span><span id="p2-hp-text">100 / 100</span></div>
+              <div class="bar-track"><i id="p2-hp-bar" class="bar-fill p2"></i></div>
+            </div>
+          </div>
+          <div class="run-status">
+            <div id="wave-label" class="wave-label">第 1 波</div>
+            <strong id="score-label">000000</strong>
+            <div class="run-meta"><span id="enemy-label">伙伴机 0</span><span id="combo-label">连击 x1</span></div>
+          </div>
+          <div class="mission-status hud-glass">
+            <span class="eyebrow">当前任务</span>
+            <strong id="mission-label">守护星核基地</strong>
+            <span id="event-label">场景稳定</span>
+          </div>
+        </header>
+
+        <div id="boss-hud" class="boss-hud is-hidden">
+          <div><span>区域霸主</span><b id="boss-hp-text">100%</b></div>
+          <div class="boss-track"><i id="boss-hp-bar"></i></div>
+        </div>
+
+        <button id="pause-button" class="icon-button pause-button is-hidden" aria-label="暂停游戏"><span></span><span></span></button>
+        <button id="replay-exit" class="replay-exit is-hidden">结束回放</button>
+
+        <div id="touch-controls" class="touch-controls is-hidden" aria-label="触控操作区">
+          <div class="move-zone">
+            <div class="control-caption">移动</div>
+            <div class="virtual-stick" data-control="move"><i class="stick-rings"></i><i class="stick-knob"></i></div>
+          </div>
+          <div class="ability-zone">
+            <button class="ability-button shield" data-ability="shield"><span>护</span><small>护盾</small><i data-cooldown="shield"></i></button>
+            <button class="ability-button repair" data-ability="repair"><span>修</span><small>修复</small><i data-cooldown="repair"></i></button>
+            <button class="ability-button dash" data-ability="dash"><span>速</span><small>冲刺</small><i data-cooldown="dash"></i></button>
+            <button class="ability-button storm" data-ability="storm"><span>电</span><small>电磁</small><i data-cooldown="storm"></i></button>
+            <button class="fire-button" data-control="fire"><i></i><span>发射</span></button>
+          </div>
+        </div>
+
+        <section id="main-menu" class="overlay menu-overlay">
+          <div class="menu-topline">
+            <div class="brand-lockup">
+              <div class="brand-mark"><i></i><i></i><b></b></div>
+              <div><span>CYBER TANK</span><strong>赛博坦克</strong></div>
+            </div>
+            <div class="resource-pill" aria-label="永久资源"><i></i><span>星核碎片</span><strong id="shard-count">0</strong></div>
+          </div>
+
+          <div class="menu-layout">
+            <section class="hero-copy">
+              <span class="season-tag">星核远征 · 家庭体验版</span>
+              <h1>驾驶你的<br /><em>光能伙伴</em></h1>
+              <p>修复失控机器人，探索六座会变化的 3D 世界。每次出发都有收获，失败也不会失去星屑。</p>
+              <div class="daily-brief">
+                <span class="eyebrow">今日挑战</span>
+                <strong id="daily-title">极光快递</strong>
+                <small id="daily-detail">使用冲刺收集 3 枚星核芯片</small>
+              </div>
+            </section>
+
+            <section class="mission-console">
+              <div class="console-heading"><div><span class="eyebrow">选择任务</span><h2>准备出发</h2></div><span id="control-hint" class="control-hint">键鼠 / 手柄</span></div>
+              <div class="mode-selector" role="radiogroup" aria-label="游戏模式">
+                <button class="mode-option is-selected" data-mode="adventure"><b>远征</b><small>8 分钟章节体验</small></button>
+                <button class="mode-option" data-mode="endless"><b>无尽</b><small>挑战最高波次</small></button>
+                <button class="mode-option" data-mode="last-core"><b>最后星核</b><small>安全区逐步收缩</small></button>
+                <button class="mode-option" data-mode="daily"><b>每日</b><small>全员相同种子</small></button>
+              </div>
+
+              <div class="choice-row">
+                <label><span>辅助驾驶</span><select id="assist-select"><option value="easy">轻松 · 自动瞄准</option><option value="standard" selected>标准 · 瞄准辅助</option><option value="expert">高手 · 完全手动</option></select></label>
+                <label><span>出发队伍</span><select id="team-select"><option value="solo">单人</option><option value="coop">双人同屏</option></select></label>
+              </div>
+
+              <div class="theme-heading"><span>主题场景</span><small id="theme-mechanic">场景机制 · 加速电轨</small></div>
+              <div id="theme-selector" class="theme-selector" role="radiogroup" aria-label="主题场景"></div>
+
+              <div class="loadout-strip">
+                <div><span>当前机体</span><strong id="chassis-label">星火号</strong></div>
+                <i></i>
+                <div><span>当前武器</span><strong id="weapon-label">星脉炮</strong></div>
+              </div>
+
+              <button id="start-button" class="primary-button"><span>启动星核引擎</span><small>开始任务</small></button>
+              <nav class="menu-nav" aria-label="更多功能">
+                <button data-panel="tech">永久科技树</button>
+                <button data-panel="armory">机体与武器</button>
+                <button data-panel="leaderboard">荣耀榜</button>
+                <button data-panel="replays">战斗回放</button>
+              </nav>
+            </section>
+          </div>
+        </section>
+
+        <section id="side-panel" class="overlay panel-overlay is-hidden" aria-modal="true" role="dialog">
+          <div class="panel-shell">
+            <button id="panel-close" class="panel-close" aria-label="关闭">×</button>
+            <div id="panel-content"></div>
+          </div>
+        </section>
+
+        <section id="pause-overlay" class="overlay simple-overlay is-hidden">
+          <div class="result-shell compact"><span class="eyebrow">任务暂停</span><h2>星核引擎待机中</h2><p>活动一下手指，准备好后继续。</p><button id="resume-button" class="primary-button"><span>继续任务</span></button><button id="quit-button" class="text-button">返回基地</button></div>
+        </section>
+
+        <section id="game-over" class="overlay simple-overlay is-hidden" aria-modal="true" role="dialog">
+          <div class="result-shell">
+            <span id="result-kicker" class="season-tag">任务完成</span>
+            <h2 id="result-title">你守护了整片街区</h2>
+            <p id="result-message">每一次修复，都让星核世界更明亮。</p>
+            <div class="result-score"><span>本次得分</span><strong id="result-score">0</strong></div>
+            <div class="result-grid"><div><span>到达波次</span><b id="result-wave">1</b></div><div><span>修复伙伴</span><b id="result-repaired">0</b></div><div><span>获得星屑</span><b id="result-stars">0</b></div></div>
+            <button id="restart-button" class="primary-button"><span>再次出发</span><small>沿用当前装备</small></button>
+            <button id="home-button" class="text-button">回到星核基地</button>
+          </div>
+        </section>
+
+        <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
