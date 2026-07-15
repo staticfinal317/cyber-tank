@@ -14,4 +14,13 @@ describe('performance governor', () => {
     for (let i = 0; i < 144; i += 1) governor.sample(.04);
     expect(governor.level).toBe('high');
   });
+
+  it('reports bounded long-session diagnostics', () => {
+    const governor = new PerformanceGovernor('balanced');
+    for (let i = 0; i < 2000; i += 1) governor.sample(i % 20 === 0 ? .04 : .016);
+    const report = governor.snapshot();
+    expect(report.samples).toBe(1800);
+    expect(report.worstMs).toBe(40);
+    expect(report.longFrameRate).toBe(5);
+  });
 });

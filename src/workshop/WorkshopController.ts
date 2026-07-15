@@ -45,7 +45,7 @@ export class WorkshopController {
     node('ammo-slot-0').addEventListener('click', () => this.setAmmoSlot(0));
     node('ammo-slot-1').addEventListener('click', () => this.setAmmoSlot(1));
     document.querySelectorAll<HTMLButtonElement>('[data-season]').forEach((button) => button.addEventListener('click', () => {
-      this.season = button.dataset.season as SeasonId; this.mission = SEASONS[this.season].missions[0];
+      this.season = button.dataset.season as SeasonId; this.mission = SEASONS[this.season].missions[0]!;
       document.querySelectorAll('[data-season]').forEach((item) => item.classList.toggle('is-selected', item === button));
       this.renderAll(); if (this.loadout) this.actions.preview(cloneLoadout(this.loadout), this.season);
     }));

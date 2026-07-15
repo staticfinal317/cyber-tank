@@ -1,4 +1,5 @@
 import { EXPEDITION_MISSIONS, SEASONS } from '../content/expedition';
+import { missionGraphProgress } from './MissionGraph';
 import type { ExpeditionMissionId, MovementModuleId, RouteId, SeasonId, SurfaceId, Vec2, WeatherId } from '../core/types';
 
 export interface RouteAccessResult { open: boolean; reason: string }
@@ -36,10 +37,8 @@ export function weatherAt(elapsed: number, season: SeasonId): WeatherState {
   return { id, intensity, warning: cycle >= 16 && cycle < 23 };
 }
 
-export function missionProgress(missionId: ExpeditionMissionId, repaired: number, wave: number, score: number): { value: number; target: number; complete: boolean } {
-  const mission = EXPEDITION_MISSIONS[missionId];
-  const value = mission.objective === 'repair' ? repaired : mission.objective === 'waves' ? wave : Math.round(score);
-  return { value: Math.min(value, mission.target), target: mission.target, complete: value >= mission.target };
+export function missionProgress(missionId: ExpeditionMissionId, repaired: number, wave: number, score: number, bosses = 0): { value: number; target: number; complete: boolean; stage: number; label: string } {
+  return missionGraphProgress(missionId, { repaired, wave, score: Math.round(score), bosses });
 }
 
 export function recommendedMovement(season: SeasonId, missionId?: ExpeditionMissionId): MovementModuleId {

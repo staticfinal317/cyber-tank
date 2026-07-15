@@ -5,11 +5,14 @@ import { EXPEDITION_MISSIONS, SEASONS, SURFACES, WEATHER } from '../content/expe
 import type { ChassisId, ExpeditionMissionId, GameOptions, LoadoutPreset, ReplayData, RouteId, RunSummary, SaveData, SeasonId, TankLoadout, ThemeId, WeaponId } from '../core/types';
 import { seedFromDate } from '../core/RNG';
 import type { Simulation } from '../gameplay/Simulation';
+import { WORLD_EVENTS } from '../gameplay/WorldEvents';
+import { ENEMIES } from '../content/enemies';
+import { COMPANIONS, VALLEY_LEVEL_XP } from '../gameplay/WorldProgression';
 import { WorkshopController } from '../workshop/WorkshopController';
 import type { GamepadStatus } from '../input/InputManager';
 import type { QualitySetting, RenderQuality } from '../platform/PerformanceGovernor';
 
-type PanelName = 'tech' | 'armory' | 'leaderboard' | 'replays';
+type PanelName = 'tech' | 'armory' | 'leaderboard' | 'replays' | 'settings' | 'home';
 
 export interface UIActions {
   start: (options: GameOptions) => void;
@@ -28,6 +31,8 @@ export interface UIActions {
   launchLoadout: (options: GameOptions) => void;
   unlockPart: (category: 'movement' | 'ammo' | 'tool' | 'appearance', id: string, cost: number) => Promise<boolean>;
   setQuality: (quality: QualitySetting) => void;
+  updateSettings: (settings: Partial<SaveData['settings']>) => void;
+  selectCompanion: (id: SaveData['world']['activeCompanion']) => void;
 }
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -136,7 +141,7 @@ export class UIController {
     byId('combo-label').classList.toggle('is-hot', sim.combo >= 3);
     if (sim.options.biome && sim.options.missionId) {
       const progress = `${sim.missionProgressValue} / ${sim.missionTarget}`;
-      byId('mission-label').textContent = `${EXPEDITION_MISSIONS[sim.options.missionId].name} · ${progress}`;
+      byId('mission-label').textContent = `${EXPEDITION_MISSIONS[sim.options.missionId].name} · ${sim.missionStageLabel} ${progress}`;
       byId('event-label').textContent = `${SURFACES[sim.players[0]?.surface ?? 'road'].name} · ${WEATHER[sim.weather.id].name}${sim.weather.warning ? '（强天气预警）' : ''}`;
     } else {
       byId('event-label').textContent = sim.options.testDrive ? '跟随发光路线完成操控检查' : sim.eventKind === 'none' ? `${THEMES[this.options.theme].mechanic}运行中` : this.eventName(sim.eventKind);
@@ -144,7 +149,7 @@ export class UIController {
     const boss = sim.enemies.find((enemy) => enemy.kind === 'boss');
     byId('boss-hud').classList.toggle('is-hidden', !boss);
     if (boss) {
-      byId('boss-name').textContent = boss.bossVariant === 'tide-leviathan' ? '潮汐巨鲸 · 霸主' : boss.bossVariant === 'ridge-colossus' ? '云岭巨像 · 霸主' : '区域霸主';
+      byId('boss-name').textContent = boss.bossVariant === 'tide-leviathan' ? '潮汐巨鲸 · 霸主' : boss.bossVariant === 'ridge-colossus' ? '云岭巨像 · 霸主' : boss.bossVariant === 'storm-roc' ? '风暴雷鹏 · 霸主' : boss.bossVariant === 'frost-mammoth' ? '极光雪象 · 霸主' : '区域霸主';
       const percent = Math.max(0, boss.hp / boss.maxHp);
       byId('boss-hp-bar').style.width = `${percent * 100}%`;
       byId('boss-hp-text').textContent = `${Math.ceil(percent * 100)}%`;
@@ -191,6 +196,12 @@ export class UIController {
     this.toast(status.connected ? `P${status.slot} 手柄已连接` : `P${status.slot} 手柄断开`, status.connected ? `${status.name} 已完成玩家归属` : '可以继续使用触控或键盘，重新连接后会自动归队');
   }
 
+  setSystemPause(paused: boolean, title = '星核引擎待机中', message = '活动一下手指，准备好后继续。'): void {
+    byId('pause-kicker').textContent = paused ? '安全暂停' : '任务暂停';
+    byId('pause-title').textContent = title; byId('pause-message').textContent = message;
+    this.paused = paused; byId('pause-overlay').classList.toggle('is-hidden', !paused);
+  }
+
   floatText(x: number, y: number, text: string, critical = false): void {
     const node = document.createElement('span'); node.className = `damage-number${critical ? ' critical' : ''}`;
     node.textContent = text; node.style.left = `${x}px`; node.style.top = `${y}px`; byId('damage-layer').append(node);
@@ -204,6 +215,7 @@ export class UIController {
     }));
     byId<HTMLSelectElement>('assist-select').addEventListener('change', (event) => { this.options.assist = (event.target as HTMLSelectElement).value as GameOptions['assist']; });
     byId<HTMLSelectElement>('team-select').addEventListener('change', (event) => { this.options.coop = (event.target as HTMLSelectElement).value === 'coop'; });
+    byId<HTMLSelectElement>('crew-role-select').addEventListener('change', (event) => { this.options.crewRoleP2 = (event.target as HTMLSelectElement).value as GameOptions['crewRoleP2']; });
     byId<HTMLSelectElement>('quality-select').addEventListener('change', (event) => this.actions.setQuality((event.target as HTMLSelectElement).value as QualitySetting));
     byId('start-button').addEventListener('click', () => this.openWorkshop());
     document.querySelectorAll<HTMLButtonElement>('[data-panel]').forEach((button) => button.addEventListener('click', () => this.openPanel(button.dataset.panel as PanelName)));
@@ -279,7 +291,7 @@ export class UIController {
     } else if (panel === 'leaderboard') {
       const rows = this.save.leaderboard.length ? this.save.leaderboard.map((run, index) => `<tr><td>${index + 1}</td><td>${run.title}</td><td>${run.score.toLocaleString('zh-CN')}</td><td>第 ${run.wave} 波</td><td>${run.date.slice(5, 10)}</td></tr>`).join('') : '<tr><td colspan="5">完成第一次任务后，你的记录会出现在这里。</td></tr>';
       root.innerHTML = `<span class="eyebrow">本机记录</span><h2>家庭荣耀榜</h2><p class="panel-intro">当前为本地榜单。数据接口已隔离，可在家长同意后接入班级或好友云榜单。</p><div class="table-scroll"><table><thead><tr><th>名次</th><th>称号</th><th>分数</th><th>进度</th><th>日期</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    } else {
+    } else if (panel === 'replays') {
       root.innerHTML = `<span class="eyebrow">最近 5 场</span><h2>战斗回放</h2><p class="panel-intro">重看自己的移动轨迹，发现一次更聪明的走位。</p><div class="replay-list"></div>`;
       const list = root.querySelector('.replay-list')!;
       if (!this.save.replays.length) list.innerHTML = '<div class="empty-state">还没有回放。完成一场任务后会自动保存。</div>';
@@ -288,11 +300,51 @@ export class UIController {
         item.innerHTML = `<div><span>${replay.summary.title}</span><small>${THEMES[replay.options.theme].name} · 第 ${replay.summary.wave} 波 · ${Math.round(replay.summary.duration)} 秒</small></div><button>播放轨迹</button>`;
         item.querySelector('button')?.addEventListener('click', () => { byId('side-panel').classList.add('is-hidden'); this.actions.playReplay(replay); }); list.append(item);
       });
+    } else if (panel === 'home') {
+      const world = this.save.world;
+      const nextXp = VALLEY_LEVEL_XP[world.valleyLevel] ?? VALLEY_LEVEL_XP.at(-1)!;
+      const previousXp = VALLEY_LEVEL_XP[world.valleyLevel - 1] ?? 0;
+      const ratio = nextXp <= previousXp ? 1 : Math.min(1, (world.valleyXp - previousXp) / (nextXp - previousXp));
+      root.innerHTML = `<span class="eyebrow">本机家庭世界</span><h2>伙伴基地</h2><p class="panel-intro">每一局都会让山海谷更明亮。图鉴、地标和伙伴羁绊只记录探索，不制造失败惩罚。</p>
+        <section class="home-progress"><div><span>山海谷等级</span><strong>Lv.${world.valleyLevel}</strong><small>${world.valleyXp} / ${nextXp} 探索经验</small></div><i><b style="width:${ratio * 100}%"></b></i><div class="home-stat"><span>已修复地标 <b>${world.restoredLandmarks.length} / ${Object.keys(EXPEDITION_MISSIONS).length}</b></span><span>伙伴图鉴 <b>${world.encyclopedia.length} / ${Object.keys(ENEMIES).length}</b></span></div></section>
+        <h3 class="section-title">远征伙伴</h3><div class="companion-grid"></div><h3 class="section-title">机器人图鉴</h3><div class="encyclopedia-grid"></div>`;
+      const companions = root.querySelector('.companion-grid')!;
+      Object.values(COMPANIONS).forEach((companion) => {
+        const unlocked = world.unlockedCompanions.includes(companion.id); const active = world.activeCompanion === companion.id;
+        const item = document.createElement('article'); item.className = `companion-card${active ? ' is-active' : ''}${unlocked ? '' : ' is-locked'}`;
+        item.style.setProperty('--buddy', `#${companion.color.toString(16).padStart(6, '0')}`);
+        item.innerHTML = `<i><b></b></i><div><strong>${companion.name}</strong><span>${companion.personality}</span><small>${companion.perk} · 羁绊 ${world.companionBond[companion.id] ?? 0}</small></div><button ${unlocked ? '' : 'disabled'}>${active ? '同行中' : unlocked ? '邀请同行' : `Lv.${companion.unlockLevel} 解锁`}</button>`;
+        item.querySelector('button')?.addEventListener('click', () => this.actions.selectCompanion(companion.id)); companions.append(item);
+      });
+      const encyclopedia = root.querySelector('.encyclopedia-grid')!;
+      Object.values(ENEMIES).forEach((enemy) => {
+        const found = world.encyclopedia.includes(enemy.id); const item = document.createElement('article'); item.className = found ? 'is-found' : '';
+        item.style.setProperty('--enemy', `#${enemy.color.toString(16).padStart(6, '0')}`);
+        item.innerHTML = `<i></i><div><strong>${found ? enemy.name : '等待发现'}</strong><small>${found ? `${enemy.role} · 第 ${enemy.unlockWave} 波起出现` : '在远征中遇见后记录'}</small></div>`; encyclopedia.append(item);
+      });
+    } else {
+      const settings = this.save.settings;
+      root.innerHTML = `<span class="eyebrow">家长与辅助设置</span><h2>舒适地一起玩</h2><p class="panel-intro">设置只保存在这台设备。减少闪光、大字和关闭振动可以随时调整，不影响任务奖励。</p><div class="family-settings">
+        <label><span><strong>主音量上限</strong><small>限制全部音乐与音效的最大音量</small></span><input data-setting="masterVolume" type="range" min="0" max="1" step="0.05" value="${settings.masterVolume}"><b>${Math.round(settings.masterVolume * 100)}%</b></label>
+        <label><span><strong>瞄准灵敏度</strong><small>影响手柄右摇杆和触控瞄准响应</small></span><input data-setting="aimSensitivity" type="range" min="0.55" max="1.75" step="0.05" value="${settings.aimSensitivity}"><b>${settings.aimSensitivity.toFixed(2)}</b></label>
+        <label><span><strong>左手布局</strong><small>交换移动区与技能区位置</small></span><input data-setting="leftHanded" type="checkbox" ${settings.leftHanded ? 'checked' : ''}></label>
+        <label><span><strong>触觉反馈</strong><small>控制手机振动与手柄震动</small></span><input data-setting="vibration" type="checkbox" ${settings.vibration ? 'checked' : ''}></label>
+        <label><span><strong>减少闪光与震屏</strong><small>降低爆炸闪光、粒子密度和镜头震动</small></span><input data-setting="reduceFlashes" type="checkbox" ${settings.reduceFlashes ? 'checked' : ''}></label>
+        <label><span><strong>大字模式</strong><small>放大菜单与任务文字</small></span><input data-setting="largeText" type="checkbox" ${settings.largeText ? 'checked' : ''}></label>
+        <label><span><strong>手柄摇杆布局</strong><small>标准为左移动右瞄准；左撇子模式相反</small></span><select data-setting="gamepadLayout"><option value="standard" ${settings.gamepadLayout === 'standard' ? 'selected' : ''}>标准布局</option><option value="southpaw" ${settings.gamepadLayout === 'southpaw' ? 'selected' : ''}>左撇子布局</option></select></label>
+        <label><span><strong>颜色辅助</strong><small>增强敌我、危险区与可交互物的区分</small></span><select data-setting="colorMode"><option value="default" ${settings.colorMode === 'default' ? 'selected' : ''}>默认色彩</option><option value="deuteranopia" ${settings.colorMode === 'deuteranopia' ? 'selected' : ''}>红绿色弱辅助</option><option value="high-contrast" ${settings.colorMode === 'high-contrast' ? 'selected' : ''}>高对比度</option></select></label>
+      </div>`;
+      root.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-setting]').forEach((control) => control.addEventListener('change', () => {
+        const key = control.dataset.setting as keyof SaveData['settings'];
+        const value = control instanceof HTMLInputElement && control.type === 'checkbox' ? control.checked
+          : control instanceof HTMLInputElement && control.type === 'range' ? Number(control.value) : control.value;
+        this.actions.updateSettings({ [key]: value } as Partial<SaveData['settings']>);
+      }));
     }
   }
 
   private togglePause(paused: boolean): void {
-    this.paused = paused; byId('pause-overlay').classList.toggle('is-hidden', !paused); this.actions.pause(paused);
+    this.setSystemPause(paused); this.actions.pause(paused);
   }
 
   private openWorkshop(): void {
@@ -326,12 +378,6 @@ export class UIController {
   }
 
   private eventName(kind: Simulation['eventKind']): string {
-    return kind === 'emp' ? '电磁风暴进行中'
-      : kind === 'meteor' ? '流星雨进行中'
-        : kind === 'supply' ? '补给信标已抵达'
-          : kind === 'flood' ? '春汛水位上涨'
-            : kind === 'lightning' ? '雷暴高地预警'
-              : kind === 'leaf-gust' ? '山谷横风增强'
-                : kind === 'snow-squall' ? '暴雪区域扩大' : '场景稳定';
+    return WORLD_EVENTS[kind].label;
   }
 }

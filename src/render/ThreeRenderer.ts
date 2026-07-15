@@ -8,7 +8,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { ENEMIES } from '../content/enemies';
 import { THEMES } from '../content/themes';
 import { MOVEMENT_MODULES, PAINTS, SEASONS } from '../content/expedition';
-import type { MovementModuleId, SeasonId, TankLoadout, ThemeDefinition, Vec2 } from '../core/types';
+import type { CompanionId, MovementModuleId, SeasonId, TankLoadout, ThemeDefinition, Vec2 } from '../core/types';
 import type { EnemyEntity, PickupEntity, PlayerEntity, ProjectileEntity, Simulation } from '../gameplay/Simulation';
 import type { RenderQuality } from '../platform/PerformanceGovernor';
 import { ModelAssetLibrary, type ModelAssetSpec, type ModelSlot } from './ModelAssetLibrary';
@@ -90,6 +90,9 @@ export class ThreeRenderer {
   private quality: RenderQuality = 'balanced';
   private particleBudget = 160;
   private readonly modelAssets = new ModelAssetLibrary();
+  private reduceFlashes = false;
+  private contextListener?: (state: 'lost' | 'restored') => void;
+  private teamMarkerMesh?: THREE.Mesh;
 
   constructor(private readonly canvas: HTMLCanvasElement, private theme: ThemeDefinition) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
@@ -120,6 +123,8 @@ export class ThreeRenderer {
     this.composer.addPass(new OutputPass());
 
     this.scene.add(this.world, this.entityRoot, this.effectRoot);
+    this.teamMarkerMesh = new THREE.Mesh(new THREE.RingGeometry(.72, .94, 40), new THREE.MeshBasicMaterial({ color: 0x55efff, transparent: true, opacity: .82, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false }));
+    this.teamMarkerMesh.rotation.x = -Math.PI / 2; this.teamMarkerMesh.visible = false; this.effectRoot.add(this.teamMarkerMesh);
     this.buildWorld(theme);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(canvas.parentElement ?? canvas);
@@ -127,11 +132,15 @@ export class ThreeRenderer {
     canvas.addEventListener('pointermove', this.onWorkshopPointerMove);
     window.addEventListener('pointerup', this.onWorkshopPointerUp);
     canvas.addEventListener('wheel', this.onWorkshopWheel, { passive: false });
+    canvas.addEventListener('webglcontextlost', this.onContextLost, false);
+    canvas.addEventListener('webglcontextrestored', this.onContextRestored, false);
     this.resize();
     void this.modelAssets.loadCatalog();
   }
 
   registerModelAsset(slot: ModelSlot, spec: ModelAssetSpec): void { this.modelAssets.register(slot, spec); }
+  setContextListener(listener: (state: 'lost' | 'restored') => void): void { this.contextListener = listener; }
+  setAccessibility(settings: { reduceFlashes: boolean }): void { this.reduceFlashes = settings.reduceFlashes; }
 
   setSimulation(simulation: Simulation): void {
     this.viewMode = 'arena';
@@ -142,6 +151,7 @@ export class ThreeRenderer {
 
   setQuality(quality: RenderQuality): void {
     this.quality = quality;
+    this.modelAssets.setQuality(quality);
     this.particleBudget = quality === 'high' ? 280 : quality === 'balanced' ? 160 : 80;
     const ratio = Math.min(window.devicePixelRatio, quality === 'high' ? 1.8 : quality === 'balanced' ? 1.35 : 1);
     this.renderer.setPixelRatio(ratio); this.composer.setPixelRatio(ratio);
@@ -264,7 +274,7 @@ export class ThreeRenderer {
   }
 
   burst(pos: Vec2, color: number, heavy = false): void {
-    const desired = heavy ? (this.quality === 'battery' ? 16 : 32) : (this.quality === 'battery' ? 6 : 10);
+    const desired = this.reduceFlashes ? (heavy ? 10 : 4) : heavy ? (this.quality === 'battery' ? 16 : 32) : (this.quality === 'battery' ? 6 : 10);
     const count = Math.max(0, Math.min(desired, this.particleBudget - this.particles.length));
     for (let i = 0; i < count; i += 1) {
       const isDebris = i % 3 === 0;
@@ -280,13 +290,15 @@ export class ThreeRenderer {
         life: maxLife, maxLife, spin: new THREE.Vector3(Math.random() * 8, Math.random() * 8, Math.random() * 8),
       });
     }
-    this.shakePower = Math.max(this.shakePower, heavy ? .75 : .16);
+    this.shakePower = Math.max(this.shakePower, this.reduceFlashes ? (heavy ? .2 : .05) : heavy ? .75 : .16);
+    if (this.reduceFlashes) return;
     const flash = new THREE.PointLight(color, heavy ? 12 : 5, heavy ? 10 : 4, 2);
     flash.position.set(pos.x, 1.3, pos.z); this.effectRoot.add(flash);
     window.setTimeout(() => this.effectRoot.remove(flash), heavy ? 130 : 70);
   }
 
   muzzle(pos: Vec2, color: number): void {
+    if (this.reduceFlashes) return;
     const flash = new THREE.PointLight(color, 4, 3.5, 2);
     flash.position.set(pos.x, 1.1, pos.z); this.effectRoot.add(flash);
     window.setTimeout(() => this.effectRoot.remove(flash), 45);
@@ -499,6 +511,12 @@ export class ThreeRenderer {
     this.workshopTank = this.createTank(1, loadout); this.workshopTank.scale.setScalar(1.72); this.workshopTank.position.set(-.55, .48, .1); this.workshopTank.rotation.y = .72; this.entityRoot.add(this.workshopTank);
     const tankBuddy = this.workshopTank.userData.companion as THREE.Group | undefined; if (tankBuddy) tankBuddy.visible = false;
     const workshopBuddy = this.createWorkshopBuddy(); workshopBuddy.position.set(-3.35, .42, 1.1); workshopBuddy.rotation.y = .35; this.world.add(workshopBuddy);
+    void this.attachWorkshopProp();
+  }
+
+  private async attachWorkshopProp(): Promise<void> {
+    const prop = await this.modelAssets.instantiate('workshop-prop'); if (!prop || this.viewMode !== 'workshop') return;
+    prop.position.set(-4.9, .1, -1.8); prop.scale.setScalar(.72); this.world.add(prop);
   }
 
   private createWorkshopArm(): THREE.Group {
@@ -560,7 +578,7 @@ export class ThreeRenderer {
   }
 
   private sync(sim: Simulation): void {
-    this.syncCollection(sim.players, this.playerMeshes, (entity) => this.createTank(entity.slot, sim.options.loadout));
+    this.syncCollection(sim.players, this.playerMeshes, (entity) => this.createTank(entity.slot, sim.options.loadout, sim.options.companion));
     this.syncCollection(sim.enemies, this.enemyMeshes, (entity) => this.createEnemy(entity));
     this.syncCollection(sim.projectiles, this.bulletMeshes, (entity) => this.createBullet(entity));
     this.syncCollection(sim.pickups, this.pickupMeshes, (entity) => this.createPickup(entity));
@@ -594,6 +612,17 @@ export class ThreeRenderer {
         mat.emissiveIntensity = enemy.hitFlash > 0 ? 4 : enemy.kind === 'boss' ? 1.5 : .8;
         mat.color.setHex(enemy.hitFlash > 0 ? 0xffffff : (group.userData.baseColor as number | undefined) ?? ENEMIES[enemy.kind].color);
       }
+      group.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        materials.forEach((candidate) => {
+          if (!(candidate instanceof THREE.Material)) return;
+          if (candidate.userData.baseOpacity === undefined && 'opacity' in candidate) candidate.userData.baseOpacity = candidate.opacity;
+          candidate.transparent = enemy.cloaked || candidate.transparent;
+          if (enemy.cloaked && 'opacity' in candidate) candidate.opacity = child === body ? .22 : .38;
+          else if ('opacity' in candidate && candidate.userData.baseOpacity !== undefined) candidate.opacity = candidate.userData.baseOpacity as number;
+        });
+      });
       const hpBar = group.userData.hp as THREE.Mesh | undefined;
       if (hpBar) hpBar.scale.x = Math.max(.001, enemy.hp / enemy.maxHp);
     });
@@ -613,6 +642,10 @@ export class ThreeRenderer {
       this.safeZone.scale.setScalar(sim.safeRadius);
       (this.safeZone.material as THREE.MeshBasicMaterial).opacity = .5 + Math.sin(this.elapsed * 3) * .18;
     }
+    if (this.teamMarkerMesh) {
+      this.teamMarkerMesh.visible = Boolean(sim.teamMarker);
+      if (sim.teamMarker) { this.teamMarkerMesh.position.set(sim.teamMarker.pos.x, .08, sim.teamMarker.pos.z); this.teamMarkerMesh.scale.setScalar(1 + Math.sin(this.elapsed * 7) * .12); }
+    }
   }
 
   private syncCollection<T extends { id: number }, M extends THREE.Object3D>(items: readonly T[], map: Map<number, M>, create: (item: T) => M): void {
@@ -624,7 +657,7 @@ export class ThreeRenderer {
     });
   }
 
-  private createTank(slot: 1 | 2, loadout?: TankLoadout): THREE.Group {
+  private createTank(slot: 1 | 2, loadout?: TankLoadout, companionId: CompanionId = 'little-core'): THREE.Group {
     const group = new THREE.Group();
     group.scale.setScalar(1.22);
     const visualRoot = new THREE.Group(); group.add(visualRoot);
@@ -653,8 +686,10 @@ export class ThreeRenderer {
     const marker = new THREE.Mesh(new THREE.RingGeometry(.86, .94, 32), new THREE.MeshBasicMaterial({ color: slot === 1 ? 0xffd84a : 0x54edff, transparent: true, opacity: .65, side: THREE.DoubleSide }));
     marker.rotation.x = -Math.PI / 2; marker.position.y = .02; group.add(marker);
     const companion = new THREE.Group(); companion.position.set(slot === 1 ? 1.15 : -1.15, 1.25, .4);
-    const buddyCore = new THREE.Mesh(new THREE.OctahedronGeometry(.18, 0), cyan); companion.add(buddyCore);
-    const buddyRing = new THREE.Mesh(new THREE.TorusGeometry(.27, .025, 5, 20), new THREE.MeshBasicMaterial({ color: slot === 1 ? 0xffd84a : 0x54edff })); buddyRing.rotation.x = Math.PI / 2; companion.add(buddyRing); group.add(companion);
+    const buddyColor = companionId === 'sprout' ? 0x86ef78 : companionId === 'snowball' ? 0xd7f8ff : slot === 1 ? 0xffd84a : 0x54edff;
+    const buddyGeometry = companionId === 'sprout' ? new THREE.SphereGeometry(.19, 10, 7) : companionId === 'snowball' ? new THREE.IcosahedronGeometry(.2, 1) : new THREE.OctahedronGeometry(.18, 0);
+    const buddyCore = new THREE.Mesh(buddyGeometry, material(buddyColor, buddyColor, 1.5)); companion.add(buddyCore);
+    const buddyRing = new THREE.Mesh(new THREE.TorusGeometry(.27, .025, 5, 20), new THREE.MeshBasicMaterial({ color: buddyColor })); buddyRing.rotation.x = Math.PI / 2; companion.add(buddyRing); group.add(companion);
     group.userData.turret = turret; group.userData.shield = shield; group.userData.companion = companion;
     void this.attachOptionalModel(group, visualRoot, 'player-tank');
     return group;
@@ -705,7 +740,7 @@ export class ThreeRenderer {
   private createEnemy(enemy: EnemyEntity): THREE.Group {
     const def = ENEMIES[enemy.kind];
     const group = new THREE.Group();
-    const visualColor = enemy.bossVariant === 'tide-leviathan' ? 0x36dff2 : enemy.bossVariant === 'ridge-colossus' ? 0xff7b3f : def.color;
+    const visualColor = enemy.bossVariant === 'tide-leviathan' ? 0x36dff2 : enemy.bossVariant === 'ridge-colossus' ? 0xff7b3f : enemy.bossVariant === 'storm-roc' ? 0xd06cff : enemy.bossVariant === 'frost-mammoth' ? 0xa8f5ff : def.color;
     const bodyMat = material(visualColor, visualColor, enemy.kind === 'boss' ? 1.45 : .85);
     const darkMat = material(0x121321, visualColor, .22, .52);
     let body: THREE.Mesh;
@@ -714,8 +749,16 @@ export class ThreeRenderer {
     else if (enemy.kind === 'splitter') body = new THREE.Mesh(new THREE.OctahedronGeometry(.9, 0), bodyMat);
     else if (enemy.kind === 'medic') body = new THREE.Mesh(new THREE.TorusKnotGeometry(.4, .16, 48, 8), bodyMat);
     else if (enemy.kind === 'sniper') body = new THREE.Mesh(new THREE.ConeGeometry(.7, 1.4, 3), bodyMat);
+    else if (enemy.kind === 'stalker') body = new THREE.Mesh(new THREE.IcosahedronGeometry(.66, 0), bodyMat);
+    else if (enemy.kind === 'summoner') body = new THREE.Mesh(new THREE.TorusKnotGeometry(.58, .21, 64, 10), bodyMat);
+    else if (enemy.kind === 'reflector') body = new THREE.Mesh(new THREE.SphereGeometry(.92, 8, 6), bodyMat);
+    else if (enemy.kind === 'warden') body = new THREE.Mesh(new THREE.CylinderGeometry(.76, 1, 1.1, 6), bodyMat);
     else if (enemy.kind === 'boss' && enemy.bossVariant === 'tide-leviathan') {
       body = new THREE.Mesh(new THREE.SphereGeometry(1.45, 18, 12), bodyMat); body.scale.set(1.35, .85, 1.1);
+    } else if (enemy.kind === 'boss' && enemy.bossVariant === 'storm-roc') {
+      body = new THREE.Mesh(new THREE.OctahedronGeometry(1.62, 1), bodyMat); body.scale.set(1.45, .75, 1);
+    } else if (enemy.kind === 'boss' && enemy.bossVariant === 'frost-mammoth') {
+      body = roundedBox(2.65, 1.55, 2.25, .36, bodyMat);
     } else if (enemy.kind === 'boss') body = new THREE.Mesh(new THREE.DodecahedronGeometry(1.65, 1), bodyMat);
     else body = new THREE.Mesh(new THREE.CylinderGeometry(.55, .7, .65, enemy.kind === 'gunner' ? 6 : 10), bodyMat);
     body.position.y = enemy.kind === 'boss' ? 1.55 : .62;
@@ -731,13 +774,29 @@ export class ThreeRenderer {
         for (let i = 0; i < 8; i += 1) { const spike = new THREE.Mesh(new THREE.ConeGeometry(.2, 1.05, 5), darkMat); spike.position.set(Math.cos(i * Math.PI / 4) * 1.72, 1.55, Math.sin(i * Math.PI / 4) * 1.72); spike.rotation.z = Math.PI / 2; spike.rotation.y = -i * Math.PI / 4; group.add(spike); }
         const crown = new THREE.Mesh(new THREE.TorusGeometry(1.02, .12, 7, 32), new THREE.MeshBasicMaterial({ color: 0xffd05a, blending: THREE.AdditiveBlending })); crown.rotation.x = Math.PI / 2; crown.position.y = 2.4; group.add(crown);
       }
+    } else if (enemy.kind === 'reflector') {
+      const shield = new THREE.Mesh(new THREE.TorusGeometry(1.02, .09, 8, 32), new THREE.MeshBasicMaterial({ color: 0xdfffff, transparent: true, opacity: .65, blending: THREE.AdditiveBlending }));
+      shield.rotation.x = Math.PI / 2; shield.position.y = .7; shield.material.userData.baseOpacity = .65; group.add(shield);
+    } else if (enemy.kind === 'summoner') {
+      for (let i = 0; i < 3; i += 1) { const pod = new THREE.Mesh(new THREE.SphereGeometry(.18, 8, 6), darkMat); const a = i / 3 * Math.PI * 2; pod.position.set(Math.cos(a) * .9, .72, Math.sin(a) * .9); group.add(pod); }
+    } else if (enemy.kind === 'warden') {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(.22, .22, 1.8), darkMat); rail.position.set(0, 1.08, -.35); group.add(rail);
     }
     const hpBack = new THREE.Mesh(new THREE.PlaneGeometry(enemy.kind === 'boss' ? 3 : 1.3, .11), new THREE.MeshBasicMaterial({ color: 0x1a1f2b, side: THREE.DoubleSide }));
     hpBack.position.set(0, enemy.kind === 'boss' ? 3.25 : 1.55, 0); hpBack.rotation.x = -Math.PI / 4; group.add(hpBack);
     const hp = new THREE.Mesh(new THREE.PlaneGeometry(enemy.kind === 'boss' ? 2.9 : 1.2, .065), new THREE.MeshBasicMaterial({ color: enemy.kind === 'boss' ? 0xffd34a : 0x75ffad, side: THREE.DoubleSide }));
     hp.position.set(0, enemy.kind === 'boss' ? 3.24 : 1.54, -.02); hp.rotation.x = -Math.PI / 4; group.add(hp);
-    group.userData.body = body; group.userData.hp = hp; group.userData.baseColor = visualColor;
+    group.userData.body = body; group.userData.hp = hp; group.userData.hpBack = hpBack; group.userData.baseColor = visualColor;
+    if (enemy.kind === 'boss') void this.attachBossModel(group);
     return group;
+  }
+
+  private async attachBossModel(group: THREE.Group): Promise<void> {
+    const model = await this.modelAssets.instantiate('enemy-boss'); if (!model) return;
+    const hp = group.userData.hp as THREE.Object3D | undefined;
+    const hpBack = group.userData.hpBack as THREE.Object3D | undefined;
+    group.children.slice().forEach((child) => { if (child !== hp && child !== hpBack) child.visible = false; });
+    group.add(model); group.userData.externalModel = true;
   }
 
   private createBullet(bullet: ProjectileEntity): THREE.Mesh {
@@ -850,6 +909,19 @@ export class ThreeRenderer {
   private onWorkshopWheel = (event: WheelEvent): void => {
     if (this.viewMode !== 'workshop') return;
     event.preventDefault(); this.workshopRadius = THREE.MathUtils.clamp(this.workshopRadius + event.deltaY * .008, 7.8, 13.5);
+  };
+
+  private onContextLost = (event: Event): void => {
+    event.preventDefault(); this.contextListener?.('lost');
+  };
+
+  private onContextRestored = (): void => {
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((mat) => { mat.needsUpdate = true; }); object.geometry.attributes.position.needsUpdate = true;
+    });
+    this.applyQualityVisuals(); this.resize(); this.contextListener?.('restored');
   };
 
   private resize(): void {

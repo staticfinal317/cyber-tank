@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0 --port 4317 --strictPort",
     "build": "tsc -p tsconfig.json && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 4318 --strictPort",
+    "assets:models": "node scripts/generate-models.mjs",
     "test": "vitest run",
     "check": "tsc -p tsconfig.json --noEmit && vitest run"
   },

@@ -11,7 +11,9 @@ export class InputManager {
   private pressedAbilities = new Set<AbilityId>();
   private pressedAbilityTargets = new Map<AbilityId, Vec2>();
   private ammoSwitchPressed = false;
+  private pingPressed = [false, false];
   private padSwitchHeld = [false, false];
+  private padPingHeld = [false, false];
   private padSlots: Array<number | undefined> = [undefined, undefined];
   private gamepadListener?: (status: GamepadStatus) => void;
   private mouse: PointerState = { x: 0, y: 0, active: false };
@@ -20,6 +22,9 @@ export class InputManager {
   private touchFiring = false;
   private playerWorld: Vec2 = { x: 0, z: 0 };
   private screenToWorld: (x: number, y: number) => Vec2 | null = () => null;
+  private vibrationEnabled = true;
+  private aimSensitivity = 1;
+  private gamepadLayout: 'standard' | 'southpaw' = 'standard';
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', this.onKeyDown, { passive: false });
@@ -36,6 +41,9 @@ export class InputManager {
 
   setProjection(fn: (x: number, y: number) => Vec2 | null): void { this.screenToWorld = fn; }
   setPlayerWorld(pos: Vec2): void { this.playerWorld = pos; }
+  setPreferences(settings: { vibration: boolean; aimSensitivity: number; gamepadLayout: 'standard' | 'southpaw' }): void {
+    this.vibrationEnabled = settings.vibration; this.aimSensitivity = settings.aimSensitivity; this.gamepadLayout = settings.gamepadLayout;
+  }
   setGamepadListener(listener: (status: GamepadStatus) => void): void {
     this.gamepadListener = listener;
     this.padSlots.forEach((index, slot) => {
@@ -45,6 +53,7 @@ export class InputManager {
   }
 
   rumble(slot: 1 | 2, strength = .35, duration = 70): void {
+    if (!this.vibrationEnabled) return;
     const index = this.padSlots[slot - 1];
     const pad = index === undefined ? undefined : navigator.getGamepads?.()[index];
     const actuator = (pad as (Gamepad & { vibrationActuator?: { playEffect?: (type: string, params: object) => Promise<unknown> } }) | undefined)?.vibrationActuator;
@@ -66,6 +75,7 @@ export class InputManager {
         abilities: gamepad.abilities,
         abilityTargets,
         switchAmmo: gamepad.switchAmmo,
+        ping: this.consumePing(1, gamepad.ping),
       };
     }
     const keyboard = this.keyboardVector('KeyA', 'KeyD', 'KeyW', 'KeyS', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown');
@@ -84,8 +94,10 @@ export class InputManager {
     this.pressedAbilities.clear();
     this.pressedAbilityTargets.clear();
     this.ammoSwitchPressed = false;
-    return { move, aim, firing: this.touchFiring || this.mouse.active || this.keys.has('Space') || gamepad.firing, abilities, abilityTargets, switchAmmo };
+    return { move, aim, firing: this.touchFiring || this.mouse.active || this.keys.has('Space') || gamepad.firing, abilities, abilityTargets, switchAmmo, ping: this.consumePing(0, gamepad.ping) };
   }
+
+  private consumePing(index: 0 | 1, gamepadPing: boolean): boolean { const value = this.pingPressed[index] || gamepadPing; this.pingPressed[index] = false; return value; }
 
   private keyboardVector(left: string, right: string, up: string, down: string, left2?: string, right2?: string, up2?: string, down2?: string): Vec2 {
     const x = Number(this.keys.has(right) || Boolean(right2 && this.keys.has(right2))) - Number(this.keys.has(left) || Boolean(left2 && this.keys.has(left2)));
@@ -94,10 +106,10 @@ export class InputManager {
     return l > 1 ? { x: x / l, z: z / l } : { x, z };
   }
 
-  private readGamepad(index: number): { move: Vec2; aim: Vec2; firing: boolean; abilities: Set<AbilityId>; switchAmmo: boolean } {
+  private readGamepad(index: number): { move: Vec2; aim: Vec2; firing: boolean; abilities: Set<AbilityId>; switchAmmo: boolean; ping: boolean } {
     const gamepadIndex = this.padSlots[index];
     const pad = gamepadIndex === undefined ? undefined : navigator.getGamepads?.()[gamepadIndex];
-    if (!pad) return { move: { ...ZERO }, aim: { ...ZERO }, firing: false, abilities: new Set(), switchAmmo: false };
+    if (!pad) return { move: { ...ZERO }, aim: { ...ZERO }, firing: false, abilities: new Set(), switchAmmo: false, ping: false };
     const dead = (value = 0) => {
       const magnitude = Math.abs(value);
       if (magnitude < .14) return 0;
@@ -109,10 +121,15 @@ export class InputManager {
     if (pad.buttons[1]?.pressed) abilities.add('dash');
     if (pad.buttons[3]?.pressed) abilities.add('storm');
     const held = Boolean(pad.buttons[2]?.pressed); const switchAmmo = held && !this.padSwitchHeld[index]; this.padSwitchHeld[index] = held;
+    const pingHeld = Boolean(pad.buttons[8]?.pressed || pad.buttons[12]?.pressed); const ping = pingHeld && !this.padPingHeld[index]; this.padPingHeld[index] = pingHeld;
+    const left = { x: dead(pad.axes[0]), z: dead(pad.axes[1]) };
+    const right = { x: dead(pad.axes[2]), z: dead(pad.axes[3]) };
+    const move = this.gamepadLayout === 'southpaw' ? right : left; const rawAim = this.gamepadLayout === 'southpaw' ? left : right;
+    const aim = { x: Math.max(-1, Math.min(1, rawAim.x * this.aimSensitivity)), z: Math.max(-1, Math.min(1, rawAim.z * this.aimSensitivity)) };
     return {
-      move: { x: dead(pad.axes[0]), z: dead(pad.axes[1]) },
-      aim: { x: dead(pad.axes[2]), z: dead(pad.axes[3]) },
-      firing: Boolean(pad.buttons[7]?.pressed || pad.buttons[0]?.pressed), abilities, switchAmmo,
+      move,
+      aim,
+      firing: Boolean(pad.buttons[7]?.pressed || pad.buttons[0]?.pressed), abilities, switchAmmo, ping,
     };
   }
 
@@ -234,6 +251,7 @@ export class InputManager {
       window.addEventListener('pointercancel', (event) => finishAbility(event, true));
     });
     document.querySelector<HTMLElement>('[data-control="ammo-switch"]')?.addEventListener('pointerdown', (event) => { event.preventDefault(); this.ammoSwitchPressed = true; this.haptic(18); });
+    document.querySelector<HTMLElement>('[data-control="marker"]')?.addEventListener('pointerdown', (event) => { event.preventDefault(); this.pingPressed[0] = true; this.haptic(20); });
   }
 
   private assignGamepad(pad: Gamepad): void {
@@ -245,12 +263,12 @@ export class InputManager {
   }
 
   private shortPadName(id: string): string { return id.replace(/\([^)]*\)/g, '').replace(/vendor:|product:/gi, '').trim().slice(0, 28) || '蓝牙手柄'; }
-  private haptic(duration: number): void { if (navigator.vibrate) navigator.vibrate(duration); }
+  private haptic(duration: number): void { if (this.vibrationEnabled && navigator.vibrate) navigator.vibrate(duration); }
   private onGamepadConnected = (event: GamepadEvent): void => this.assignGamepad(event.gamepad);
   private onGamepadDisconnected = (event: GamepadEvent): void => {
     const slot = this.padSlots.findIndex((index) => index === event.gamepad.index);
     if (slot < 0) return;
-    this.padSlots[slot] = undefined; this.padSwitchHeld[slot] = false;
+    this.padSlots[slot] = undefined; this.padSwitchHeld[slot] = false; this.padPingHeld[slot] = false;
     this.gamepadListener?.({ slot: (slot + 1) as 1 | 2, connected: false, name: this.shortPadName(event.gamepad.id) });
   };
 
@@ -260,6 +278,8 @@ export class InputManager {
     const selected = ability[event.code];
     if (selected) this.pressedAbilities.add(selected);
     if (event.code === 'KeyQ') this.ammoSwitchPressed = true;
+    if (event.code === 'KeyC') this.pingPressed[0] = true;
+    if (event.code === 'KeyU') this.pingPressed[1] = true;
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) event.preventDefault();
   };
   private onKeyUp = (event: KeyboardEvent): void => { this.keys.delete(event.code); };

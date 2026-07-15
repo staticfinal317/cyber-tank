@@ -31,8 +31,16 @@ export function createDefaultSave(): SaveData {
     seasonBestScores: {},
     techRanks: {},
     achievements: [],
+    world: {
+      valleyXp: 0, valleyLevel: 1, restoredLandmarks: [], encyclopedia: [], activeCompanion: 'little-core',
+      unlockedCompanions: ['little-core'], companionBond: { 'little-core': 0, sprout: 0, snowball: 0 }, themeMastery: {},
+    },
     leaderboard: [],
     replays: [],
-    settings: { music: true, sfx: true, quality: 'auto', leftHanded: false },
+    settings: {
+      music: true, sfx: true, quality: 'auto', leftHanded: false, vibration: true,
+      reduceFlashes: false, largeText: false, colorMode: 'default', masterVolume: .55,
+      aimSensitivity: 1, gamepadLayout: 'standard',
+    },
   };
 }

@@ -4,8 +4,11 @@ import { AMMO_STRATEGIES, MOVEMENT_STRATEGIES } from './LoadoutStrategies';
 import { missionProgress, surfaceAt, weatherAt, type WeatherState } from './ExpeditionRules';
 import { RNG } from '../core/RNG';
 import { SpatialHash } from './SpatialHash';
+import { ENEMY_BEHAVIORS, behaviorSpeedScale, behaviorSteering, incomingDamageScale, isEnemyCloaked } from './EnemyBehaviors';
+import { CHASSIS_ABILITIES, abilityCooldown } from './ChassisAbilities';
+import { WORLD_EVENTS, eventPool, type WorldEventKind } from './WorldEvents';
 import type {
-  AbilityId, AmmoId, AssistLevel, BossVariant, ChassisId, EnemyKind, ExpeditionMissionId, GameMode, GameOptions,
+  AbilityId, AmmoId, AssistLevel, BossVariant, ChassisId, CrewRole, EnemyKind, ExpeditionMissionId, GameMode, GameOptions,
   ReplayFrame, SurfaceId, ThemeId, Vec2, WeaponId,
 } from '../core/types';
 
@@ -16,6 +19,7 @@ export interface ControlFrame {
   abilities: ReadonlySet<AbilityId>;
   abilityTargets?: ReadonlyMap<AbilityId, Vec2>;
   switchAmmo: boolean;
+  ping?: boolean;
 }
 
 export interface PlayerEntity {
@@ -38,6 +42,7 @@ export interface PlayerEntity {
   abilityCooldowns: Record<AbilityId, number>;
   activeAmmoIndex: 0 | 1;
   surface: SurfaceId;
+  crewRole: CrewRole | 'pilot';
 }
 
 export interface EnemyEntity {
@@ -52,6 +57,8 @@ export interface EnemyEntity {
   cooldown: number;
   phase: number;
   marked: number;
+  specialCooldown: number;
+  cloaked: boolean;
   bossVariant?: BossVariant;
 }
 
@@ -78,7 +85,7 @@ export interface PickupEntity {
   life: number;
 }
 
-export type WorldEventKind = 'none' | 'emp' | 'meteor' | 'supply' | 'flood' | 'lightning' | 'leaf-gust' | 'snow-squall';
+export type { WorldEventKind } from './WorldEvents';
 
 export interface SimulationEvents {
   shot: { player: PlayerEntity; projectile: ProjectileEntity };
@@ -116,16 +123,20 @@ export class Simulation {
   readonly enemies: EnemyEntity[] = [];
   readonly projectiles: ProjectileEntity[] = [];
   readonly pickups: PickupEntity[] = [];
+  readonly encounteredEnemies = new Set<EnemyKind>();
   readonly replayFrames: ReplayFrame[] = [];
   readonly bounds = { x: ARENA_X, z: ARENA_Z };
 
   wave = 0;
   score = 0;
   repaired = 0;
+  bossesDefeated = 0;
   combo = 1;
   comboTimer = 0;
   elapsed = 0;
   safeRadius = 13.5;
+  teamMarker?: { pos: Vec2; life: number; owner: number };
+  coopGateCharge = 0;
   eventKind: WorldEventKind = 'none';
   eventTimer = 0;
   nextWaveTimer = 1.6;
@@ -137,6 +148,7 @@ export class Simulation {
   missionProgressValue = 0;
   missionTarget = 0;
   missionComplete = false;
+  missionStageLabel = '';
   missionCompletedAt = 0;
   private nextId = 1;
   private eventClock = 24;
@@ -180,6 +192,7 @@ export class Simulation {
       abilityCooldowns: { shield: 0, repair: 0, dash: 0, storm: 0 },
       activeAmmoIndex: this.options.loadout?.activeAmmoIndex ?? 0,
       surface: 'road',
+      crewRole: slot === 1 ? 'pilot' : this.options.crewRoleP2 ?? 'navigator',
     };
   }
 
@@ -195,6 +208,7 @@ export class Simulation {
     this.updateWorldEvent(step);
     this.rebuildSpatialIndexes();
     this.updatePlayers(step, controls);
+    this.updateCooperation(step);
     this.updateEnemies(step);
     this.updateProjectiles(step);
     this.updatePickups(step);
@@ -265,6 +279,7 @@ export class Simulation {
       const autoFire = this.options.assist === 'easy' && Boolean(autoTarget);
       if ((control.firing || autoFire) && player.cooldown <= 0) this.firePlayer(player);
       control.abilities.forEach((ability) => this.useAbility(player, ability, control.abilityTargets?.get(ability)));
+      if (control.ping) this.placeTeamMarker(player);
 
       if (this.options.mode === 'last-core' && len(player.pos) > this.safeRadius && player.invulnerable <= 0) {
         this.damagePlayer(player, 5 * dt, false);
@@ -283,7 +298,7 @@ export class Simulation {
     const rapid = this.rapidTimer > 0 ? .56 : 1;
     player.cooldown = weapon.cooldown * rapid * (1 - (this.techRanks.cooling ?? 0) * .04);
     const pelletCount = weapon.pellets + (this.multiTimer > 0 ? 2 : 0);
-    const damage = weapon.damage * (ammo?.damage ?? 1) * (1 + (this.techRanks.power ?? 0) * .05) * (this.powerTimer > 0 ? 1.6 : 1);
+    const damage = weapon.damage * (ammo?.damage ?? 1) * (1 + (this.techRanks.power ?? 0) * .05) * (this.powerTimer > 0 ? 1.6 : 1) * (player.crewRole === 'wingman' ? 1.15 : 1);
     for (let i = 0; i < pelletCount; i += 1) {
       const offset = (i - (pelletCount - 1) / 2) * weapon.spread;
       const c = Math.cos(offset); const s = Math.sin(offset);
@@ -301,32 +316,57 @@ export class Simulation {
 
   private useAbility(player: PlayerEntity, ability: AbilityId, target?: Vec2): void {
     if (player.abilityCooldowns[ability] > 0 || !player.alive) return;
-    player.abilityCooldowns[ability] = ABILITY_BASE[ability];
-    if (ability === 'shield') { player.shield = 5; player.invulnerable = 1; }
+    const profile = CHASSIS_ABILITIES[player.chassis];
+    player.abilityCooldowns[ability] = abilityCooldown(player.chassis, ability, ABILITY_BASE[ability]);
+    if (ability === 'shield') {
+      player.shield = profile.shieldDuration; player.invulnerable = 1;
+      if (profile.teamShieldRadius > 0) this.players.forEach((ally) => { if (ally.alive && distance(ally.pos, player.pos) <= profile.teamShieldRadius) ally.shield = Math.max(ally.shield, profile.shieldDuration * .8); });
+    }
     if (ability === 'repair') {
-      player.hp = Math.min(player.maxHp, player.hp + player.maxHp * .38);
+      player.hp = Math.min(player.maxHp, player.hp + player.maxHp * profile.repairRatio);
       const down = this.players.find((other) => !other.alive && distance(other.pos, player.pos) < 5);
       if (down) down.downTimer = 0;
+      if (player.crewRole === 'engineer') this.players.forEach((ally) => { if (ally !== player && ally.alive && distance(ally.pos, player.pos) < 6) ally.hp = Math.min(ally.maxHp, ally.hp + ally.maxHp * .3); });
     }
     let effectPos = { ...player.pos };
     if (ability === 'dash') {
       const direction = normalized(target ?? player.aim, player.aim);
       player.aim = direction;
-      player.vel.x += direction.x * 5.8; player.vel.z += direction.z * 5.8;
+      player.vel.x += direction.x * profile.dashImpulse; player.vel.z += direction.z * profile.dashImpulse;
       player.boost = 2.6; player.invulnerable = .45;
       effectPos = { x: player.pos.x + direction.x * 1.8, z: player.pos.z + direction.z * 1.8 };
+      if (profile.dashDamage > 0) this.enemies.forEach((enemy) => { if (distance(enemy.pos, effectPos) < 2.5) { enemy.hp -= profile.dashDamage; enemy.marked = .5; } });
     }
     if (ability === 'storm') {
       const direction = normalized(target ?? player.aim, player.aim);
       effectPos = target ? { x: clamp(player.pos.x + direction.x * 5.2, -ARENA_X, ARENA_X), z: clamp(player.pos.z + direction.z * 5.2, -ARENA_Z, ARENA_Z) } : { ...player.pos };
       this.enemies.forEach((enemy) => {
-        if (distance(enemy.pos, effectPos) < (target ? 4.5 : 7)) {
-          enemy.hp -= 65; enemy.marked = .7;
-          this.emit('damage', { pos: enemy.pos, value: 65, critical: true });
+        if (distance(enemy.pos, effectPos) < profile.stormRadius) {
+          enemy.hp -= profile.stormDamage; enemy.marked = .7;
+          this.emit('damage', { pos: enemy.pos, value: profile.stormDamage, critical: true });
         }
       });
     }
     this.emit('ability', { player, ability, pos: effectPos });
+  }
+
+  private placeTeamMarker(player: PlayerEntity): void {
+    const range = player.crewRole === 'navigator' ? 7.5 : 5.5;
+    const pos = { x: clamp(player.pos.x + player.aim.x * range, -ARENA_X, ARENA_X), z: clamp(player.pos.z + player.aim.z * range, -ARENA_Z, ARENA_Z) };
+    this.teamMarker = { pos, life: player.crewRole === 'navigator' ? 8 : 5, owner: player.id };
+    const radius = player.crewRole === 'navigator' ? 4.2 : 2.6;
+    this.enemies.forEach((enemy) => { if (distance(enemy.pos, pos) < radius) enemy.marked = Math.max(enemy.marked, 3); });
+    this.emit('message', { title: player.crewRole === 'navigator' ? '领航标记已共享' : '小队标记已共享', body: '所有驾驶员都能看到青色目标环' });
+  }
+
+  private updateCooperation(dt: number): void {
+    if (this.teamMarker) { this.teamMarker.life -= dt; if (this.teamMarker.life <= 0) this.teamMarker = undefined; }
+    const [p1, p2] = this.players;
+    if (!p1 || !p2 || !p1.alive || !p2.alive || distance(p1.pos, p2.pos) > 3.8) { this.coopGateCharge = Math.max(0, this.coopGateCharge - dt * .5); return; }
+    this.coopGateCharge += dt;
+    if (this.coopGateCharge < 8) return;
+    this.coopGateCharge = 0; p1.shield = Math.max(p1.shield, 4); p2.shield = Math.max(p2.shield, 4); this.score += 300;
+    this.emit('message', { title: '协作机关启动', body: '两台机体并肩充能，获得家庭护盾与 300 分协作奖励' });
   }
 
   private updateEnemies(dt: number): void {
@@ -339,26 +379,29 @@ export class Simulation {
       if (!target) continue;
       const toTarget = normalized({ x: target.pos.x - enemy.pos.x, z: target.pos.z - enemy.pos.z });
       const def = ENEMIES[enemy.kind];
-      let desired = toTarget;
-      let speed = def.speed * (1 + this.wave * .018);
+      const profile = ENEMY_BEHAVIORS[enemy.kind];
+      const targetDistance = distance(enemy.pos, target.pos);
+      const desired = behaviorSteering(profile, toTarget, targetDistance, enemy.phase);
+      let speed = def.speed * (1 + this.wave * .018) * behaviorSpeedScale(profile, enemy.phase);
       if (enemy.marked > 0) speed *= .56;
-      if (enemy.kind === 'gunner' || enemy.kind === 'sniper' || enemy.kind === 'medic') {
-        const d = distance(enemy.pos, target.pos);
-        const preferred = enemy.kind === 'sniper' ? 9 : 6;
-        if (d < preferred - 1) desired = { x: -toTarget.x, z: -toTarget.z };
-        else if (d < preferred + 1) desired = { x: -toTarget.z * .5, z: toTarget.x * .5 };
-      }
-      if (enemy.kind === 'charger' && Math.sin(enemy.phase * 3) > .5) speed *= 1.7;
-      if (enemy.kind === 'medic') {
+      enemy.cloaked = isEnemyCloaked(profile, enemy.phase);
+      enemy.specialCooldown -= dt;
+      if (profile.tags.includes('heal')) {
         const ally = this.enemies.find((other) => other !== enemy && other.hp < other.maxHp && distance(other.pos, enemy.pos) < 4);
-        if (ally) ally.hp = Math.min(ally.maxHp, ally.hp + dt * 8);
+        if (ally) ally.hp = Math.min(ally.maxHp, ally.hp + dt * (profile.healPerSecond ?? 8));
+      }
+      if (profile.tags.includes('summon') && enemy.specialCooldown <= 0 && this.enemies.length < 45) {
+        enemy.specialCooldown = (profile.summonEvery ?? 7) * this.rng.range(.85, 1.15);
+        const summonKind = profile.summonKind ?? 'scout';
+        const count = enemy.kind === 'boss' ? 2 : 1;
+        for (let n = 0; n < count; n += 1) this.spawnEnemy(summonKind, { x: enemy.pos.x + (n ? .8 : -.8), z: enemy.pos.z + .4 }, .78 + this.wave * .025);
       }
       enemy.vel.x += (desired.x * speed - enemy.vel.x) * Math.min(1, dt * 4.5);
       enemy.vel.z += (desired.z * speed - enemy.vel.z) * Math.min(1, dt * 4.5);
       enemy.pos.x = clamp(enemy.pos.x + enemy.vel.x * dt, -ARENA_X - 1, ARENA_X + 1);
       enemy.pos.z = clamp(enemy.pos.z + enemy.vel.z * dt, -ARENA_Z - 1, ARENA_Z + 1);
 
-      if (def.fireRate > 0 && enemy.cooldown <= 0 && distance(enemy.pos, target.pos) < (enemy.kind === 'sniper' ? 14 : 9)) {
+      if (def.fireRate > 0 && enemy.cooldown <= 0 && targetDistance < (enemy.kind === 'sniper' || enemy.kind === 'warden' ? 14 : 9)) {
         enemy.cooldown = def.fireRate * this.rng.range(.8, 1.15);
         this.fireEnemy(enemy, toTarget, def.damage);
       }
@@ -366,7 +409,7 @@ export class Simulation {
   }
 
   private fireEnemy(enemy: EnemyEntity, dir: Vec2, damage: number): void {
-    const count = enemy.kind === 'boss' ? (enemy.bossVariant === 'tide-leviathan' ? 8 : 5) : 1;
+    const count = enemy.kind === 'boss' ? (enemy.bossVariant === 'tide-leviathan' ? 8 : 5) : enemy.kind === 'warden' ? 3 : 1;
     for (let i = 0; i < count; i += 1) {
       const offset = enemy.bossVariant === 'tide-leviathan' ? i / count * Math.PI * 2 : count === 1 ? 0 : (i - 2) * .2;
       const c = Math.cos(offset); const s = Math.sin(offset);
@@ -408,7 +451,9 @@ export class Simulation {
         if (targetIndex >= 0) {
           const enemy = this.enemies[targetIndex];
           if (!enemy) continue;
-          enemy.hp -= bullet.damage; enemy.hitFlash = .12;
+          const profile = ENEMY_BEHAVIORS[enemy.kind];
+          const damageScale = incomingDamageScale(profile, enemy.phase) * (enemy.cloaked ? .72 : 1);
+          enemy.hp -= bullet.damage * damageScale; enemy.hitFlash = .12;
           if (bullet.ammo === 'frost' || bullet.ammo === 'seed-core') enemy.marked = bullet.ammo === 'frost' ? 2.8 : 1.4;
           if (bullet.ammo === 'repair-seed' || bullet.ammo === 'seed-core') {
             const owner = this.players.find((player) => player.id === bullet.owner);
@@ -419,7 +464,7 @@ export class Simulation {
             if (chained) { chained.hp -= bullet.damage * .55; chained.hitFlash = .1; this.emit('hit', { pos: chained.pos, color: bullet.color, heavy: false }); }
           }
           this.emit('hit', { pos: bullet.pos, color: bullet.color, heavy: bullet.damage > 40 });
-          this.emit('damage', { pos: enemy.pos, value: Math.round(bullet.damage), critical: bullet.damage > 40 });
+          this.emit('damage', { pos: enemy.pos, value: Math.round(bullet.damage * damageScale), critical: bullet.damage * damageScale > 40 });
           if (bullet.pierce > 0) bullet.pierce -= 1; else this.releaseProjectileAt(bi);
         }
       } else {
@@ -471,6 +516,7 @@ export class Simulation {
     const earned = Math.round(def.score * this.combo);
     this.score += earned; this.repaired += 1;
     this.emit('repaired', { enemy, pos: { ...enemy.pos }, score: earned });
+    if (enemy.kind === 'boss') this.bossesDefeated += 1;
     if (enemy.kind === 'splitter' && this.enemies.length < 45) {
       this.spawnEnemy('charger', { x: enemy.pos.x - .5, z: enemy.pos.z });
       this.spawnEnemy('charger', { x: enemy.pos.x + .5, z: enemy.pos.z });
@@ -529,11 +575,13 @@ export class Simulation {
 
   private spawnEnemy(kind: EnemyKind, pos: Vec2, scale = 1): void {
     const def = ENEMIES[kind];
+    this.encounteredEnemies.add(kind);
     const hp = def.hp * scale;
     this.enemies.push({
       id: this.nextId++, kind, pos: { ...pos }, vel: { x: 0, z: 0 }, hp, maxHp: hp,
       radius: def.radius, hitFlash: 0, cooldown: this.rng.range(.5, Math.max(.7, def.fireRate)), phase: this.rng.range(0, 8), marked: 0,
-      bossVariant: kind === 'boss' ? (this.options.route === 'river-route' ? 'tide-leviathan' : 'ridge-colossus') : undefined,
+      specialCooldown: this.rng.range(3.5, 7), cloaked: false,
+      bossVariant: kind === 'boss' ? this.bossVariant() : undefined,
     });
   }
 
@@ -545,23 +593,19 @@ export class Simulation {
     if (this.eventTimer <= 0) this.eventKind = 'none';
     if (this.eventClock > 0 || this.wave < 2) return;
     this.eventClock = this.rng.range(28, 40);
-    this.eventTimer = 8;
-    const seasonalEvents: Record<NonNullable<GameOptions['season']>, WorldEventKind> = {
-      spring: 'flood', summer: 'lightning', autumn: 'leaf-gust', winter: 'snow-squall',
-    };
-    this.eventKind = this.options.biome && this.options.season
-      ? this.rng.pick<WorldEventKind>([seasonalEvents[this.options.season], 'meteor', 'supply'])
-      : this.rng.pick<WorldEventKind>(['emp', 'meteor', 'supply']);
-    const message = this.eventKind === 'emp' ? '电磁风暴：技能恢复加速'
-      : this.eventKind === 'meteor' ? '流星雨：留意地面预警圈'
-        : this.eventKind === 'flood' ? '春汛上涨：河流推力增强，浮航模块最稳定'
-          : this.eventKind === 'lightning' ? '雷暴预警：闪电即将净化高地目标'
-            : this.eventKind === 'leaf-gust' ? '山谷叶风：横风将轻推所有机体'
-              : this.eventKind === 'snow-squall' ? '暴雪来临：深雪区域阻力暂时增大'
-                : '补给信标：星核芯片已送达';
-    this.emit('event', { kind: this.eventKind, message });
+    this.eventKind = this.rng.pick(eventPool(this.options));
+    const definition = WORLD_EVENTS[this.eventKind];
+    this.eventTimer = definition.duration;
+    this.emit('event', { kind: this.eventKind, message: definition.message });
     if (this.eventKind === 'supply') {
       this.pickups.push({ id: this.nextId++, kind: this.rng.pick(['rapid', 'multi', 'power', 'shield']), pos: { x: this.rng.range(-5, 5), z: this.rng.range(-3, 4) }, life: 15 });
+    }
+    if (this.eventKind === 'sky-current') this.players.forEach((player) => { player.abilityCooldowns.dash = Math.max(0, player.abilityCooldowns.dash - 4); });
+    if (this.eventKind === 'crystal-surge') this.powerTimer = Math.max(this.powerTimer, 10);
+    if (this.eventKind === 'toy-march' && this.enemies.length < 38) for (let i = 0; i < 3; i += 1) this.spawnFromEdge('scout');
+    if (this.eventKind === 'aurora-pulse') this.players.forEach((player) => { player.shield = Math.max(player.shield, 6); });
+    if (this.eventKind === 'dino-stampede') {
+      for (let i = 0; i < 5; i += 1) this.emit('hit', { pos: { x: -8 + i * 4, z: this.rng.range(-6, 5) }, color: definition.color, heavy: true });
     }
     if (this.eventKind === 'meteor' || this.eventKind === 'lightning') {
       for (let i = 0; i < 4; i += 1) {
@@ -580,14 +624,21 @@ export class Simulation {
   private updateMission(): void {
     const id = this.options.missionId;
     if (!id) return;
-    const progress = missionProgress(id, this.repaired, this.wave, this.score);
+    const progress = missionProgress(id, this.repaired, this.wave, this.score, this.bossesDefeated);
     this.missionProgressValue = progress.value;
     this.missionTarget = progress.target;
+    this.missionStageLabel = progress.label;
     if (progress.complete && !this.missionComplete) {
       this.missionComplete = true;
       this.missionCompletedAt = this.elapsed;
       this.emit('mission', { missionId: id });
     }
+  }
+
+  private bossVariant(): BossVariant {
+    if (this.options.missionId === 'summer-storm-eye') return 'storm-roc';
+    if (this.options.missionId === 'winter-aurora') return 'frost-mammoth';
+    return this.options.route === 'river-route' ? 'tide-leviathan' : 'ridge-colossus';
   }
 
   private nearestPlayer(pos: Vec2): PlayerEntity | undefined {

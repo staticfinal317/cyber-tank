@@ -31,15 +31,26 @@ export class AudioManager {
   private ambient?: AmbientLayer;
   private ambientWarningAt = -10;
   private _enabled = true;
+  private musicEnabled = true;
+  private masterVolume = .55;
+  private output?: GainNode;
 
   get enabled(): boolean { return this._enabled; }
   set enabled(value: boolean) {
     this._enabled = value;
-    if (this.context && this.ambient) this.ambient.master.gain.setTargetAtTime(value ? 1 : .0001, this.context.currentTime, .12);
+    if (this.context && this.ambient) this.ambient.master.gain.setTargetAtTime(this.musicEnabled ? 1 : .0001, this.context.currentTime, .12);
+  }
+
+  setPreferences(music: boolean, sfx: boolean, masterVolume: number): void {
+    this.musicEnabled = music; this._enabled = sfx; this.masterVolume = Math.max(0, Math.min(1, masterVolume));
+    if (this.context && this.output) this.output.gain.setTargetAtTime(this.masterVolume, this.context.currentTime, .08);
+    if (this.context && this.ambient) this.ambient.master.gain.setTargetAtTime(music ? 1 : .0001, this.context.currentTime, .12);
   }
 
   unlock(): void {
-    if (!this.context) this.context = new AudioContext();
+    if (!this.context) {
+      this.context = new AudioContext(); this.output = this.context.createGain(); this.output.gain.value = this.masterVolume; this.output.connect(this.context.destination);
+    }
     if (this.context.state === 'suspended') void this.context.resume();
   }
 
@@ -49,7 +60,7 @@ export class AudioManager {
     if (this.ambient?.season === season && this.ambient.weather === weather) return;
     this.stopAmbience(.12);
     const context = this.context; const profile = AMBIENT_PROFILES[season]; const now = context.currentTime;
-    const master = context.createGain(); master.gain.setValueAtTime(.0001, now); master.gain.exponentialRampToValueAtTime(this._enabled ? 1 : .0001, now + .7); master.connect(context.destination);
+    const master = context.createGain(); master.gain.setValueAtTime(.0001, now); master.gain.exponentialRampToValueAtTime(this.musicEnabled ? 1 : .0001, now + .7); master.connect(this.output ?? context.destination);
     const noiseGain = context.createGain(); noiseGain.gain.value = profile.noise;
     const filter = context.createBiquadFilter(); filter.type = profile.filter; filter.frequency.value = profile.frequency; filter.Q.value = season === 'autumn' ? .9 : .45;
     const source = context.createBufferSource(); source.buffer = this.createLoopNoise(context); source.loop = true;
@@ -109,7 +120,7 @@ export class AudioManager {
     const osc = this.context.createOscillator(); const gain = this.context.createGain();
     osc.type = type; osc.frequency.setValueAtTime(from, now); osc.frequency.exponentialRampToValueAtTime(to, now + duration);
     gain.gain.setValueAtTime(volume, now); gain.gain.exponentialRampToValueAtTime(.0001, now + duration);
-    osc.connect(gain).connect(this.context.destination); osc.start(now); osc.stop(now + duration);
+    osc.connect(gain).connect(this.output ?? this.context.destination); osc.start(now); osc.stop(now + duration);
   }
 
   private noise(duration: number, volume: number, frequency = 850): void {
@@ -120,6 +131,6 @@ export class AudioManager {
     for (let i = 0; i < length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / length);
     const source = this.context.createBufferSource(); const filter = this.context.createBiquadFilter(); const gain = this.context.createGain();
     source.buffer = buffer; filter.type = 'lowpass'; filter.frequency.value = frequency; gain.gain.value = volume;
-    source.connect(filter).connect(gain).connect(this.context.destination); source.start();
+    source.connect(filter).connect(gain).connect(this.output ?? this.context.destination); source.start();
   }
 }

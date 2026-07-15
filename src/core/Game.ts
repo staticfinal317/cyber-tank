@@ -11,6 +11,7 @@ import { LocalSaveRepository } from '../persistence/LocalSaveRepository';
 import { ThreeRenderer } from '../render/ThreeRenderer';
 import { UIController } from '../ui/UIController';
 import { PerformanceGovernor } from '../platform/PerformanceGovernor';
+import { applyWorldRun } from '../gameplay/WorldProgression';
 
 export class Game {
   private readonly repo = new LocalSaveRepository();
@@ -52,20 +53,26 @@ export class Game {
       launchLoadout: (options) => this.start(options),
       unlockPart: (category, id, cost) => this.unlockPart(category, id, cost),
       setQuality: (quality) => void this.setQuality(quality),
+      updateSettings: (settings) => void this.updateSettings(settings),
+      selectCompanion: (id) => void this.selectCompanion(id),
     });
     this.input.setGamepadListener((status) => this.ui.updateGamepad(status));
+    this.renderer.setContextListener((state) => this.handleContextState(state));
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
   }
 
   async init(): Promise<void> {
     this.save = await this.repo.load();
-    this.audio.enabled = this.save.settings.sfx;
+    this.applySettings();
     this.renderer.setQuality(this.performance.setSetting(this.save.settings.quality));
     this.ui.updatePerformance(this.performance.level, this.performance.fps);
     this.ui.setSave(this.save);
+    const saveStatus = this.repo.getStatus(); if (saveStatus.message) this.ui.toast(saveStatus.mode === 'memory' ? '会话安全模式' : '进度已恢复', saveStatus.message);
     this.loop(performance.now());
   }
 
   private start(options: GameOptions): void {
+    options.companion = this.save.world.activeCompanion;
     this.audio.unlock();
     if (options.biome === 'mountain-sea-valley' && options.season) this.audio.setExpeditionAmbience(options.season, SEASONS[options.season].weather);
     else this.audio.stopAmbience();
@@ -73,7 +80,6 @@ export class Game {
     this.resultHandled = false;
     this.paused = false;
     this.workshopActive = false;
-    this.audio.stopAmbience();
     this.simulationAccumulator = 0;
     if (options.biome === 'mountain-sea-valley') this.renderer.setExpeditionSeason(options.season ?? 'spring');
     else this.renderer.setTheme(options.theme);
@@ -140,6 +146,39 @@ export class Game {
     await this.repo.save(this.save);
     this.ui.toast('画质模式已更新', setting === 'auto' ? '会根据设备帧率自动平衡清晰度和特效' : setting === 'high' ? '高品质光影与粒子已开启' : setting === 'balanced' ? '清晰度与续航保持平衡' : '已降低分辨率与粒子数量以延长续航');
   }
+
+  private async updateSettings(settings: Partial<SaveData['settings']>): Promise<void> {
+    this.save.settings = { ...this.save.settings, ...settings };
+    this.applySettings(); await this.repo.save(this.save); this.ui.setSave(this.save);
+    const status = this.repo.getStatus(); this.ui.toast('家庭设置已保存', status.message ?? '新的舒适度设置已经生效');
+  }
+
+  private applySettings(): void {
+    const settings = this.save.settings;
+    this.audio.setPreferences(settings.music, settings.sfx, settings.masterVolume);
+    this.input.setPreferences(settings); this.renderer.setAccessibility(settings);
+    document.body.classList.toggle('is-left-handed', settings.leftHanded);
+    document.body.classList.toggle('is-large-text', settings.largeText);
+    document.body.classList.toggle('reduce-flashes', settings.reduceFlashes);
+    document.body.dataset.colorMode = settings.colorMode;
+  }
+
+  private handleContextState(state: 'lost' | 'restored'): void {
+    if (state === 'lost') {
+      this.paused = true; this.audio.stopAmbience(.08);
+      this.ui.setSystemPause(true, '画面正在安全恢复', '请不要关闭页面，星核任务和成长进度都不会丢失。');
+    } else {
+      this.lastTime = performance.now(); this.simulationAccumulator = 0; this.paused = false;
+      this.ui.setSystemPause(false); this.ui.toast('画面恢复完成', '任务已从安全暂停点继续');
+    }
+  }
+
+  private onVisibilityChange = (): void => {
+    this.lastTime = performance.now(); this.simulationAccumulator = 0;
+    if (document.hidden && this.simulation && !this.simulation.over) {
+      this.paused = true; this.ui.setSystemPause(true, '任务已自动暂停', '回到页面后点击继续，不会因为切换应用受到伤害。');
+    }
+  };
 
   private playReplay(replay: ReplayData): void {
     this.simulation = undefined;
@@ -220,6 +259,7 @@ export class Game {
       this.save.completedMissions.push(missionId);
       this.save.starShards += EXPEDITION_MISSIONS[missionId].reward;
     }
+    this.save.world = applyWorldRun(this.save.world, summary, sim.encounteredEnemies, missionId && sim.missionComplete ? missionId : undefined);
     if (sim.options.season) {
       this.save.seasonBestScores[sim.options.season] = Math.max(this.save.seasonBestScores[sim.options.season] ?? 0, summary.score);
     }
@@ -254,6 +294,13 @@ export class Game {
     await this.repo.save(this.save);
     this.ui.setSave(this.save);
     this.ui.toast('科技升级完成', `${node.name}提升到 ${rank + 1} 级`);
+  }
+
+  private async selectCompanion(id: SaveData['world']['activeCompanion']): Promise<void> {
+    if (!this.save.world.unlockedCompanions.includes(id)) return;
+    this.save.world.activeCompanion = id;
+    await this.repo.save(this.save); this.ui.setSave(this.save);
+    this.ui.toast('伙伴已加入', '新的远征伙伴会在下一次任务中陪你出发');
   }
 
   private async unlockWeapon(id: WeaponId): Promise<void> {
@@ -326,6 +373,6 @@ function pickupName(kind: string): string {
 }
 
 function enemyColor(kind: string): number {
-  const colors: Record<string, number> = { scout: 0xff5f8f, charger: 0xffb13b, gunner: 0xa975ff, bulwark: 0x4ea9ff, splitter: 0xf26cff, medic: 0x61f5a1, sniper: 0xffe16a, boss: 0xff3f70 };
+  const colors: Record<string, number> = { scout: 0xff5f8f, charger: 0xffb13b, gunner: 0xa975ff, bulwark: 0x4ea9ff, splitter: 0xf26cff, medic: 0x61f5a1, sniper: 0xffe16a, stalker: 0x56f0ff, summoner: 0xff78d8, reflector: 0x8ffaff, warden: 0xe497ff, boss: 0xff3f70 };
   return colors[kind] ?? 0xffffff;
 }

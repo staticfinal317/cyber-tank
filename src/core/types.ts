@@ -8,10 +8,14 @@ export type ThemeId =
 
 export type GameMode = 'adventure' | 'endless' | 'last-core' | 'daily';
 export type AssistLevel = 'easy' | 'standard' | 'expert';
-export type EnemyKind = 'scout' | 'charger' | 'gunner' | 'bulwark' | 'splitter' | 'medic' | 'sniper' | 'boss';
-export type BossVariant = 'tide-leviathan' | 'ridge-colossus';
+export type EnemyKind =
+  | 'scout' | 'charger' | 'gunner' | 'bulwark' | 'splitter' | 'medic' | 'sniper'
+  | 'stalker' | 'summoner' | 'reflector' | 'warden' | 'boss';
+export type BossVariant = 'tide-leviathan' | 'ridge-colossus' | 'storm-roc' | 'frost-mammoth';
 export type WeaponId = 'pulse' | 'scatter' | 'rail' | 'arc';
 export type ChassisId = 'spark' | 'guardian' | 'comet';
+export type CompanionId = 'little-core' | 'sprout' | 'snowball';
+export type CrewRole = 'navigator' | 'engineer' | 'wingman';
 export type AbilityId = 'shield' | 'repair' | 'dash' | 'storm';
 export type SeasonId = 'spring' | 'summer' | 'autumn' | 'winter';
 export type BiomeId = 'mountain-sea-valley';
@@ -23,10 +27,10 @@ export type ToolId = 'repair-arm' | 'scanner' | 'tractor' | 'bridge-projector';
 export type PaintId = 'sunrise-yellow' | 'sky-cyan' | 'forest-green' | 'aurora-violet';
 export type RouteId = 'ridge-route' | 'river-route';
 export type ExpeditionMissionId =
-  | 'spring-bridge' | 'spring-river'
-  | 'summer-beacon' | 'summer-island'
-  | 'autumn-orchard' | 'autumn-migration'
-  | 'winter-lighthouse' | 'winter-ice-rescue';
+  | 'spring-bridge' | 'spring-river' | 'spring-garden'
+  | 'summer-beacon' | 'summer-island' | 'summer-storm-eye'
+  | 'autumn-orchard' | 'autumn-migration' | 'autumn-kite-trail'
+  | 'winter-lighthouse' | 'winter-ice-rescue' | 'winter-aurora';
 
 export interface TankLoadout {
   chassis: ChassisId;
@@ -75,6 +79,7 @@ export interface EnemyDefinition {
   damage: number;
   color: number;
   unlockWave: number;
+  role: 'chaser' | 'ranged' | 'tank' | 'support' | 'trickster' | 'boss';
 }
 
 export interface WeaponDefinition {
@@ -104,6 +109,8 @@ export interface GameOptions {
   theme: ThemeId;
   assist: AssistLevel;
   coop: boolean;
+  crewRoleP2?: CrewRole;
+  companion?: CompanionId;
   weapon: WeaponId;
   chassis: ChassisId;
   loadout?: TankLoadout;
@@ -166,6 +173,16 @@ export interface SaveData {
   seasonBestScores: Partial<Record<SeasonId, number>>;
   techRanks: Record<string, number>;
   achievements: string[];
+  world: {
+    valleyXp: number;
+    valleyLevel: number;
+    restoredLandmarks: ExpeditionMissionId[];
+    encyclopedia: EnemyKind[];
+    activeCompanion: CompanionId;
+    unlockedCompanions: CompanionId[];
+    companionBond: Record<CompanionId, number>;
+    themeMastery: Partial<Record<ThemeId, number>>;
+  };
   leaderboard: RunSummary[];
   replays: ReplayData[];
   settings: {
@@ -173,5 +190,12 @@ export interface SaveData {
     sfx: boolean;
     quality: 'auto' | 'high' | 'balanced' | 'battery';
     leftHanded: boolean;
+    vibration: boolean;
+    reduceFlashes: boolean;
+    largeText: boolean;
+    colorMode: 'default' | 'deuteranopia' | 'high-contrast';
+    masterVolume: number;
+    aimSensitivity: number;
+    gamepadLayout: 'standard' | 'southpaw';
   };
 }

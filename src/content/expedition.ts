@@ -54,7 +54,7 @@ export interface SeasonDefinition {
   accent: number;
   recommendedMovement: MovementModuleId;
   routeHint: string;
-  missions: [ExpeditionMissionId, ExpeditionMissionId];
+  missions: ExpeditionMissionId[];
 }
 
 export interface WeatherDefinition {
@@ -72,7 +72,7 @@ export interface ExpeditionMissionDefinition {
   season: SeasonId;
   name: string;
   description: string;
-  objective: 'repair' | 'waves' | 'score';
+  objective: 'repair' | 'waves' | 'score' | 'boss' | 'graph';
   target: number;
   reward: number;
   recommended: MovementModuleId;
@@ -128,10 +128,10 @@ export const PAINTS: Record<PaintId, PaintDefinition> = {
 };
 
 export const SEASONS: Record<SeasonId, SeasonDefinition> = {
-  spring: { id: 'spring', name: '春季', forecast: '春雨将至', weather: 'spring-rain', accent: 0x8de8a7, recommendedMovement: 'amphibious', routeHint: '河道水位上涨，浮航路线将开放。', missions: ['spring-bridge', 'spring-river'] },
-  summer: { id: 'summer', name: '夏季', forecast: '午后雷阵雨', weather: 'thunderstorm', accent: 0x55e9ff, recommendedMovement: 'sand-float', routeHint: '沙滩路径干燥，雷雨时远离高地。', missions: ['summer-beacon', 'summer-island'] },
-  autumn: { id: 'autumn', name: '秋季', forecast: '山谷叶风', weather: 'leaf-wind', accent: 0xffb653, recommendedMovement: 'all-terrain', routeHint: '山路落叶较滑，越野轮更稳定。', missions: ['autumn-orchard', 'autumn-migration'] },
-  winter: { id: 'winter', name: '冬季', forecast: '傍晚降雪', weather: 'snowfall', accent: 0xc8f4ff, recommendedMovement: 'snow-tread', routeHint: '湖面冻结形成捷径，深雪区需要履带。', missions: ['winter-lighthouse', 'winter-ice-rescue'] },
+  spring: { id: 'spring', name: '春季', forecast: '春雨将至', weather: 'spring-rain', accent: 0x8de8a7, recommendedMovement: 'amphibious', routeHint: '河道水位上涨，浮航路线将开放。', missions: ['spring-bridge', 'spring-river', 'spring-garden'] },
+  summer: { id: 'summer', name: '夏季', forecast: '午后雷阵雨', weather: 'thunderstorm', accent: 0x55e9ff, recommendedMovement: 'sand-float', routeHint: '沙滩路径干燥，雷雨时远离高地。', missions: ['summer-beacon', 'summer-island', 'summer-storm-eye'] },
+  autumn: { id: 'autumn', name: '秋季', forecast: '山谷叶风', weather: 'leaf-wind', accent: 0xffb653, recommendedMovement: 'all-terrain', routeHint: '山路落叶较滑，越野轮更稳定。', missions: ['autumn-orchard', 'autumn-migration', 'autumn-kite-trail'] },
+  winter: { id: 'winter', name: '冬季', forecast: '傍晚降雪', weather: 'snowfall', accent: 0xc8f4ff, recommendedMovement: 'snow-tread', routeHint: '湖面冻结形成捷径，深雪区需要履带。', missions: ['winter-lighthouse', 'winter-ice-rescue', 'winter-aurora'] },
 };
 
 export const SEASON_ORDER: SeasonId[] = ['spring', 'summer', 'autumn', 'winter'];
@@ -147,12 +147,16 @@ export const WEATHER: Record<WeatherId, WeatherDefinition> = {
 export const EXPEDITION_MISSIONS: Record<ExpeditionMissionId, ExpeditionMissionDefinition> = {
   'spring-bridge': { id: 'spring-bridge', season: 'spring', name: '花溪修桥队', description: '修复 8 台桥梁机器人，让山村重新通行。', objective: 'repair', target: 8, reward: 80, recommended: 'all-terrain' },
   'spring-river': { id: 'spring-river', season: 'spring', name: '春汛巡航', description: '沿上涨的河道守护 3 个补给波次。', objective: 'waves', target: 3, reward: 90, recommended: 'amphibious' },
+  'spring-garden': { id: 'spring-garden', season: 'spring', name: '会发光的花田', description: '先唤醒花种机器人，再守护整片花田开放。', objective: 'graph', target: 2, reward: 125, recommended: 'all-terrain' },
   'summer-beacon': { id: 'summer-beacon', season: 'summer', name: '雷雨信标', description: '在雷阵雨中取得 1800 分，为灯塔补充能量。', objective: 'score', target: 1800, reward: 100, recommended: 'sand-float' },
   'summer-island': { id: 'summer-island', season: 'summer', name: '小岛救援', description: '修复 10 台受困机器人并守住沙滩。', objective: 'repair', target: 10, reward: 110, recommended: 'amphibious' },
+  'summer-storm-eye': { id: 'summer-storm-eye', season: 'summer', name: '风暴眼实验', description: '给避雷杆充能，再协力击退风暴霸主。', objective: 'graph', target: 2, reward: 155, recommended: 'sand-float' },
   'autumn-orchard': { id: 'autumn-orchard', season: 'autumn', name: '果园守护', description: '完成 4 个波次，保护成熟的山谷果园。', objective: 'waves', target: 4, reward: 110, recommended: 'all-terrain' },
   'autumn-migration': { id: 'autumn-migration', season: 'autumn', name: '候鸟航标', description: '取得 2200 分，重新点亮迁徙航标。', objective: 'score', target: 2200, reward: 120, recommended: 'road-wheel' },
+  'autumn-kite-trail': { id: 'autumn-kite-trail', season: 'autumn', name: '风筝航线', description: '修好风筝信标，沿着叶风完成山谷航线。', objective: 'graph', target: 2, reward: 150, recommended: 'all-terrain' },
   'winter-lighthouse': { id: 'winter-lighthouse', season: 'winter', name: '雪夜灯塔', description: '穿过深雪完成 4 个守护波次。', objective: 'waves', target: 4, reward: 130, recommended: 'snow-tread' },
   'winter-ice-rescue': { id: 'winter-ice-rescue', season: 'winter', name: '冰湖救援', description: '在结冰湖面修复 12 台迷航机器人。', objective: 'repair', target: 12, reward: 140, recommended: 'snow-tread' },
+  'winter-aurora': { id: 'winter-aurora', season: 'winter', name: '极光守护礼', description: '收集极光能量，唤醒冰原守护者。', objective: 'graph', target: 2, reward: 180, recommended: 'snow-tread' },
 };
 
 export const BIOMES: Record<BiomeId, BiomeDefinition> = {
