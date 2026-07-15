@@ -36,6 +36,15 @@ jobs:
       - name: Run quality gate
         run: npm run check
 
+      - name: Upload UI failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ui-failure-diagnostics
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Build production bundle
         run: npm run build
 
