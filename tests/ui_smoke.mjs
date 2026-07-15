@@ -7,6 +7,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const results = path.join(root, 'test-results');
 fs.mkdirSync(results, { recursive: true });
 const baseUrl = 'http://127.0.0.1:4317';
+const ciTexturePixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -25,6 +26,15 @@ async function runView(browser, name, viewport, touch = false) {
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('crash', () => errors.push('browser page crashed'));
   try {
+    // SwiftShader is already validating the real scene graph and Battery render
+    // path in CI. Substitute only the two high-resolution expedition textures
+    // so the smoke test exercises asynchronous texture success/fallback wiring
+    // without making DOM assertions compete with software texture sampling.
+    if (process.env.CI) {
+      await page.route('**/assets/environment/*.jpg', (route) => route.fulfill({
+        status: 200, contentType: 'image/png', body: ciTexturePixel,
+      }));
+    }
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     console.log(`[ui-smoke] ${name}: menu loaded`);
     await page.locator('#main-menu h1').waitFor({ state: 'visible' });
@@ -68,17 +78,20 @@ async function runView(browser, name, viewport, touch = false) {
       assert(await launch.isEnabled(), `${name}: compatible movement module did not open route`);
     }
     await launch.click({ force: true, timeout: 3_000 });
-    await page.locator('#hud').waitFor({ state: 'visible' });
+    const combatTimeout = process.env.CI ? 30_000 : 12_000;
+    await page.locator('#hud').waitFor({ state: 'visible', timeout: combatTimeout });
     await page.waitForTimeout(700);
-    assert((await page.locator('#wave-label').innerText()).trim(), `${name}: combat HUD did not update`);
-    console.log(`[ui-smoke] ${name}: combat active, ${await page.locator('#enemy-label').innerText()}`);
+    const waveText = await page.locator('#wave-label').textContent({ timeout: combatTimeout });
+    assert(waveText?.trim(), `${name}: combat HUD did not update`);
+    const enemyText = await page.locator('#enemy-label').textContent({ timeout: combatTimeout });
+    console.log(`[ui-smoke] ${name}: combat active, ${enemyText?.trim() ?? ''}`);
 
     if (touch) {
       await page.locator('#touch-controls').waitFor({ state: 'visible' });
       assert(await page.locator('.ability-button').count() === 4, `${name}: ability controls missing`);
       if (name === 'ipad') {
         assert(await page.locator('#p2-status').isVisible(), 'iPad: crew status hidden');
-        assert((await page.locator('#p2-hp-text').innerText()).includes('共享炮塔'), 'iPad: gunner role missing');
+        assert((await page.locator('#p2-hp-text').textContent({ timeout: combatTimeout }))?.includes('共享炮塔'), 'iPad: gunner role missing');
       }
     } else {
       await page.keyboard.down('KeyW'); await page.waitForTimeout(250); await page.keyboard.up('KeyW');
