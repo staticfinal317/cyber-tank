@@ -16,7 +16,10 @@ async function runView(browser, name, viewport, touch = false) {
   console.log(`[ui-smoke] ${name}: context`);
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1, hasTouch: touch, isMobile: false });
   const page = await context.newPage();
-  page.setDefaultTimeout(process.env.CI ? 12_000 : 5_000);
+  // First navigation includes Three.js, shader setup and project art decoding.
+  // Keep the smoke gate strict, but avoid treating a cold local WebGL startup
+  // as a product failure on slower integrated GPUs.
+  page.setDefaultTimeout(process.env.CI ? 15_000 : 12_000);
   const errors = [];
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('pageerror', (error) => errors.push(error.message));

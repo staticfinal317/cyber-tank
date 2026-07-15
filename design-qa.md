@@ -1,54 +1,59 @@
-# Expedition Workshop Design QA
+# Cyber Tank “2+3” Fusion Design QA
 
-- source visual truth path: `docs/design/expedition-workshop-visual-target.png`
-- implementation screenshot path: `test-results/workshop-desktop-final.png`
-- Pad screenshot path: `test-results/workshop-pad-final.png`
-- mobile screenshot path: `test-results/workshop-mobile-final.png`
-- full-view comparison evidence: `test-results/workshop-qa-comparison-final.png`
-- viewport: 1440 × 900
-- state: 远征工坊 / 行走分类 / 浮航模块已安装
-- primary interactions tested: 进入工坊、选择浮航模块、评分更新、保存方案、20 秒试驾、自动返回工坊
-- responsive checks: 1180 × 820 Pad、390 × 844 手机
-- console errors checked: 0 error / 0 warning
+- source visual truth 2 (neon objective arena): `/Users/longda/.codex/generated_images/019f5fde-3417-7792-88de-0e021f30ba3c/exec-315b545e-a3e0-4f14-9a80-67411636ad22.png`
+- source visual truth 3 (mountain-sea battle zone): `/Users/longda/.codex/generated_images/019f5fde-3417-7792-88de-0e021f30ba3c/exec-8f97efcd-a33d-483d-87be-8035087d66be.png`
+- implementation screenshot: `test-results/cyber-tank-23-final-pad.png`
+- full-view comparison evidence: `test-results/cyber-tank-23-final-comparison.png`
+- generated environment assets: `public/assets/environment/mountain-sea-citadel.jpg`, `public/assets/environment/neon-tactical-floor.jpg`
+- viewport: 1280 × 720 landscape Pad
+- state: `?touch=1` / expedition / spring / ridge route / standard aim assist / wave 1
 
-**2026-07-15 Remediation**
+## Intended Fusion
 
-- [Resolved P1] 自研 GLB/PBR 机体与霸主已接入 High/Balanced/Low 三档 LOD。画质切换会热替换已显示实例，旧异步请求不能覆盖新档位；程序几何继续作为断网/加载失败与 Battery 兜底。
-- [Resolved P1] `ARMORED_BODY`、能量/传感器节点与独立行走模块分别接收涂装、灯色和轮胎配置；实例共享几何但克隆材质，避免串色并保持可靠释放。
-- [Resolved P2] 山海谷新增两条可读发光样条路线、远景云层、双层山体、瀑布、河海与季节粒子，路线选择在场景中有明确空间对应。
-- [Resolved P2] 部件抽屉不再复用字体图标；行走、炮弹、工具和涂装卡使用按部件 ID 生成的立体 CSS 微缩轮廓，并与真实安装颜色同步。
-- [Validated] 当前 `npm run check` 包含 TypeScript、Vitest 与 Node Playwright；E2E 覆盖桌面、1180×820 iPad 共享车组和 390×844 手机的主页→工坊→兼容部件→发车→HUD，桌面另测暂停/恢复。
+- Concept 2 contributes the three readable tactical lanes, A / CORE / B capture objectives, neon objective beams, cover rhythm, dark PBR-like floor and action-control hierarchy.
+- Concept 3 contributes the mountain-sea citadel horizon, storm boundary, seasonal rain, expedition route context and a more cinematic lowered 3D camera.
+- Existing Cyber Tank HUD and Pad control language remain the product design system; the references guide battlefield composition, depth, lighting and interaction rather than replacing the established UI.
 
-**Required Fidelity Surfaces**
+## Interaction and Functional Verification
 
-- Fonts and typography: hierarchy, weights and Chinese wrapping are consistent; title scale is slightly smaller than source but remains clear. No clipping found.
-- Spacing and layout rhythm: desktop major regions align with the source; Pad and mobile actions stay within bounds. Pad category targets are 64 × 66px; mobile targets are 85.75 × 52px. No horizontal overflow.
-- Colors and visual tokens: navy/cyan/yellow tokens match. Workshop exposure and bloom were reduced after the first QA pass to restore body and wheel detail.
-- Image quality and asset fidelity: GLB/PBR is the primary High/Balanced path; program geometry is retained deliberately as resilient fallback.
-- Copy and content: specified Chinese labels, weather, destination, terrain ratings, save/test/launch actions and dual ammo slots are present.
+- [x] Player starts on a safe ridge surface and remains clear of the Pad movement stick.
+- [x] Five enemies appear in wave 1; HUD copy uses `敌方机` rather than the misleading former `伙伴机`.
+- [x] A / CORE / B are real Simulation objectives with capture progress, score, shield reward and wave reset.
+- [x] Pointer/touch fire, manual fire button and aim direction are connected to the combat input path.
+- [x] Every player projectile is created at the physical barrel endpoint (`player.pos + aim * 1.7`), and renderer muzzle flash, cone light and recoil use that same projectile origin.
+- [x] Cannon-origin behavior is covered by an adversarial Simulation test; tactical capture/reward is covered by an automated test.
+- [x] Browser smoke covers menu → workshop → compatible module → combat on desktop, iPad shared-crew layout and phone.
+- [x] Browser smoke checks page/console errors; none were reported.
 
-**Comparison History**
+## Required Fidelity Surfaces
 
-1. First capture: `test-results/workshop-desktop-before.png`
-   - Findings: severe bloom/overexposure, tank silhouette blown out, landscape not visible, camera scale too aggressive.
-   - Fixes: lowered workshop exposure and bloom, reduced emissive intensities, resized the tank, brightened the destination sky and water.
-2. Second capture: `test-results/workshop-desktop-landscape.png`
-   - Findings: readable tank but empty middle region and shallow destination storytelling.
-   - Fixes: added sky plane, layered mountains, waterfall, trees and blossoms; changed camera target; added armor details, amphibious wheel structure and a dedicated companion robot.
-3. Post-fix capture: `test-results/workshop-desktop-final.png`
-   - Result: functional layout, legibility, responsive behavior and visual tokens pass; P1 asset fidelity remains.
+- Typography and copy: existing Chinese HUD hierarchy is retained; wave, score, mission and enemy count remain readable over the new scene.
+- Spacing and controls: touch joystick and right action cluster stay within the 1280 × 720 safe regions; the player spawn no longer sits under the movement control.
+- Color and tokens: cyan / magenta / yellow objectives, dark gunmetal floor and the existing health/action tokens match the selected references.
+- Image quality: two original raster environment assets were produced with the built-in ImageGen workflow, optimized to JPEG and loaded asynchronously with generation guards and procedural fallback.
+- 3D depth: perspective camera, shadowed cover, raised bridges, animated objective rings/beams, projectile lights, bloom, chromatic separation and the citadel horizon create foreground/midground/background separation.
+- Responsive behavior: desktop, iPad and 390 × 844 phone smoke paths pass; touch HUD remains available on forced-touch Pad QA.
 
-**Implementation Checklist**
+## Comparison History
 
-- [x] Add optimized glTF/PBR part asset pipeline with procedural fallback.
-- [x] Generate distinct miniatures for movement, ammo, tool and appearance cards.
-- [x] Add readable in-world mountain/water route lines and environmental particles.
-- [x] Add automated desktop/Pad/mobile interaction verification to the quality gate.
+1. Initial implementation: `/tmp/cyber-tank-23-pad.png`
+   - Finding: tactical structure existed, but the bright low-poly natural ground dominated and the horizon lacked the selected mountain-sea density.
+   - Fix: lowered the camera, darkened expedition lighting, added the citadel/storm/waterfall fallback and generated dedicated scene art.
+2. Intermediate implementation: `/tmp/cyber-tank-23-final-pad-v3.png`
+   - Finding: the citadel plate appeared, but the detailed gunmetal material was restricted to narrow lane strips; bright procedural foliage competed with enemies and objectives.
+   - Fix: mapped the generated PBR-like floor across the full arena, retained three lane identities as overlays, hid low-detail foliage after the raster art is ready and expanded the horizon plate to cover the full viewport.
+3. Final implementation: `test-results/cyber-tank-23-final-pad.png`
+   - Result: the scene now combines a detailed neon tactical foreground with a mountain-sea citadel horizon; objectives, tank and touch controls remain legible and functional.
 
-**Follow-up Polish**
+## Quality Gates
 
-- Add small suspension bounce during module installation.
-- Add reduced-flash mode for magnetic sparks.
-- Add a child-friendly preset rename keypad.
+- `npm run check`: passed — TypeScript, 18 Vitest files / 57 tests, desktop/iPad/phone browser smoke.
+- `npm run build`: passed — Vite production bundle generated successfully.
 
-final result: pass
+## P3 Follow-up Polish
+
+- Replace the remaining deliberately simple cover silhouettes with authored glTF modular ruins, cliff props and wet-surface normal/roughness maps.
+- Add depth-aware fog cards and parallax vegetation clusters for high-end tablets while keeping the current generated-floor and procedural paths as Balanced/Battery fallbacks.
+- Add a dedicated visual regression capture at projectile age 0–80 ms so muzzle flash alignment is also image-diffed in CI, in addition to the exact-coordinate gameplay test.
+
+final result: passed

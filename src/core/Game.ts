@@ -210,7 +210,7 @@ export class Game {
 
   private bindSimulation(sim: Simulation): void {
     sim.on('shot', ({ player, projectile }) => {
-      this.renderer.muzzle(player.pos, projectile.color);
+      this.renderer.muzzle(player, projectile);
       this.audio.shot(player.weapon === 'rail' ? .65 : 1);
       this.input.rumble(player.slot, .18, 38);
     });

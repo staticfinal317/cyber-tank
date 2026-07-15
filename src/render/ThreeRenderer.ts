@@ -9,7 +9,7 @@ import { ENEMIES } from '../content/enemies';
 import { THEMES } from '../content/themes';
 import { MOVEMENT_MODULES, PAINTS, SEASONS } from '../content/expedition';
 import type { CompanionId, MovementModuleId, SeasonId, TankLoadout, ThemeDefinition, Vec2 } from '../core/types';
-import type { EnemyEntity, PickupEntity, PlayerEntity, ProjectileEntity, Simulation } from '../gameplay/Simulation';
+import type { EnemyEntity, PickupEntity, PlayerEntity, ProjectileEntity, Simulation, TacticalNode } from '../gameplay/Simulation';
 import type { RenderQuality } from '../platform/PerformanceGovernor';
 import { ModelAssetLibrary, type ModelAssetSpec, type ModelSlot } from './ModelAssetLibrary';
 
@@ -62,6 +62,7 @@ export class ThreeRenderer {
   private readonly enemyMeshes = new Map<number, THREE.Group>();
   private readonly bulletMeshes = new Map<number, THREE.Mesh>();
   private readonly pickupMeshes = new Map<number, THREE.Group>();
+  private readonly tacticalNodeMeshes = new Map<TacticalNode['id'], THREE.Group>();
   private readonly particles: Particle[] = [];
   private readonly trailMarks: TrailMark[] = [];
   private readonly lastTrailPositions = new Map<number, Vec2>();
@@ -101,6 +102,8 @@ export class ThreeRenderer {
   private reduceFlashes = false;
   private contextListener?: (state: 'lost' | 'restored') => void;
   private teamMarkerMesh?: THREE.Mesh;
+  private readonly animatedWorld: THREE.Object3D[] = [];
+  private worldGeneration = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement, private theme: ThemeDefinition) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
@@ -108,13 +111,13 @@ export class ThreeRenderer {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = .8;
+    this.renderer.toneMappingExposure = .74;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     const room = new RoomEnvironment();
     this.scene.environment = pmrem.fromScene(room, .04).texture;
     room.dispose(); pmrem.dispose();
-    this.camera.position.set(0, 20.5, 18.5);
+    this.camera.position.set(0, 14.8, 21.4);
     this.camera.lookAt(this.cameraTarget);
 
     const renderPass = new RenderPass(this.scene, this.camera);
@@ -209,7 +212,7 @@ export class ThreeRenderer {
     this.invalidateWorkshopRequests();
     this.viewMode = 'arena';
     this.expeditionSeason = undefined;
-    this.renderer.toneMappingExposure = .8; this.bloom.threshold = .78; this.bloom.strength = .36; this.bloom.radius = .34;
+    this.renderer.toneMappingExposure = .74; this.bloom.threshold = .72; this.bloom.strength = .44; this.bloom.radius = .38;
     this.theme = THEMES[id];
     clearAndDispose(this.world);
     this.buildWorld(this.theme);
@@ -220,8 +223,8 @@ export class ThreeRenderer {
     this.invalidateWorkshopRequests();
     this.viewMode = 'arena';
     this.expeditionSeason = season;
-    this.renderer.toneMappingExposure = season === 'winter' ? .72 : .8;
-    this.bloom.threshold = .76; this.bloom.strength = season === 'summer' ? .42 : .36; this.bloom.radius = .36;
+    this.renderer.toneMappingExposure = season === 'winter' ? .7 : .66;
+    this.bloom.threshold = .68; this.bloom.strength = season === 'summer' ? .58 : .52; this.bloom.radius = .42;
     clearAndDispose(this.world);
     this.buildExpeditionWorld(season);
     this.applyQualityVisuals();
@@ -271,10 +274,11 @@ export class ThreeRenderer {
       if (this.workshopTank && !this.workshopDragging) this.workshopTank.rotation.y += dt * .07;
       if (this.workshopArm) this.workshopArm.rotation.y = -.6 + Math.sin(this.elapsed * .85) * .08;
     } else {
-      this.camera.position.set(x, 20.5 + y, 18.5 + y);
-      this.camera.lookAt(this.cameraTarget.x + x * .25, this.cameraTarget.y, this.cameraTarget.z + y * .2);
+      this.camera.position.set(this.cameraTarget.x * .28 + x, 14.8 + y, 21.4 + this.cameraTarget.z * .18 + y);
+      this.camera.lookAt(this.cameraTarget.x + x * .25, .26, this.cameraTarget.z - 1.15 + y * .2);
     }
     this.updateWeatherParticles(dt);
+    this.animateWorld(dt);
     this.world.rotation.y = Math.sin(this.elapsed * .09) * .002;
     // Battery mode intentionally skips the multi-pass bloom/chromatic pipeline.
     // Besides saving fill-rate on entry-level tablets, this keeps software WebGL
@@ -322,11 +326,27 @@ export class ThreeRenderer {
     window.setTimeout(() => this.effectRoot.remove(flash), heavy ? 130 : 70);
   }
 
-  muzzle(pos: Vec2, color: number): void {
+  muzzle(player: PlayerEntity, projectile: ProjectileEntity): void {
     if (this.reduceFlashes) return;
-    const flash = new THREE.PointLight(color, 4, 3.5, 2);
-    flash.position.set(pos.x, 1.1, pos.z); this.effectRoot.add(flash);
+    const color = projectile.color;
+    const dir = new THREE.Vector3(projectile.vel.x, 0, projectile.vel.z).normalize();
+    const pos = projectile.pos;
+    const flash = new THREE.PointLight(color, 7, 5.2, 2);
+    flash.position.set(pos.x, .92, pos.z); this.effectRoot.add(flash);
     window.setTimeout(() => this.effectRoot.remove(flash), 45);
+    const flare = new THREE.Mesh(
+      new THREE.ConeGeometry(.22, .72, 9, 1, true),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .92, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    flare.rotation.x = Math.PI / 2;
+    flare.rotation.y = Math.atan2(dir.x, dir.z);
+    flare.position.set(pos.x + dir.x * .18, .83, pos.z + dir.z * .18);
+    this.effectRoot.add(flare);
+    const maxLife = .11;
+    this.particles.push({ mesh: flare, velocity: dir.multiplyScalar(1.5), life: maxLife, maxLife, spin: new THREE.Vector3(0, 0, 9) });
+    const tank = this.playerMeshes.get(player.id);
+    if (tank) tank.userData.recoil = Math.max(tank.userData.recoil ?? 0, .28);
+    this.shakePower = Math.max(this.shakePower, .055);
   }
 
   ability(pos: Vec2, color: number): void {
@@ -346,7 +366,10 @@ export class ThreeRenderer {
   }
 
   private buildWorld(theme: ThemeDefinition): void {
+    this.worldGeneration += 1;
     this.weatherParticles = [];
+    this.animatedWorld.length = 0;
+    this.tacticalNodeMeshes.clear();
     this.scene.background = new THREE.Color(theme.sky);
     this.scene.fog = new THREE.FogExp2(theme.fog, .018);
 
@@ -378,6 +401,7 @@ export class ThreeRenderer {
       const rail = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), borderMat); rail.position.set(x!, y!, z!); this.world.add(rail);
     });
     this.addThemeProps(theme);
+    this.addTacticalBattlefield(theme.primary, theme.accent, theme.danger, false);
 
     this.safeZone = new THREE.Mesh(
       new THREE.RingGeometry(.985, 1, 96),
@@ -388,29 +412,40 @@ export class ThreeRenderer {
   }
 
   private buildExpeditionWorld(season: SeasonId): void {
+    const generation = ++this.worldGeneration;
     const palette = this.seasonPalette(season);
     this.weatherParticles = [];
-    this.scene.background = new THREE.Color(palette.sky);
-    this.scene.fog = new THREE.FogExp2(palette.fog, season === 'summer' ? .021 : .016);
+    this.animatedWorld.length = 0;
+    this.tacticalNodeMeshes.clear();
+    const battleSky = new THREE.Color(palette.sky).multiplyScalar(season === 'winter' ? .5 : .26);
+    const battleFog = new THREE.Color(palette.fog).multiplyScalar(season === 'winter' ? .58 : .34);
+    this.scene.background = battleSky;
+    this.scene.fog = new THREE.FogExp2(battleFog, season === 'summer' ? .016 : .012);
 
-    const hemi = new THREE.HemisphereLight(palette.hemi, palette.ground, 1.65);
-    const sun = new THREE.DirectionalLight(palette.sun, season === 'summer' ? 2.25 : season === 'winter' ? 1.85 : 2.75);
+    const hemi = new THREE.HemisphereLight(palette.hemi, battleFog, season === 'winter' ? 1.18 : .92);
+    const sun = new THREE.DirectionalLight(palette.sun, season === 'summer' ? 1.72 : season === 'winter' ? 1.55 : 1.62);
     sun.position.set(-8, 18, 10); sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.left = -18; sun.shadow.camera.right = 18; sun.shadow.camera.top = 18; sun.shadow.camera.bottom = -18;
-    const seasonalGlow = new THREE.PointLight(SEASONS[season].accent, 10, 28, 2); seasonalGlow.position.set(0, 5, -7);
+    const seasonalGlow = new THREE.PointLight(SEASONS[season].accent, 15, 30, 2); seasonalGlow.position.set(0, 4.5, -5.5);
     this.world.add(hemi, sun, seasonalGlow);
 
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(34, 30), new THREE.MeshStandardMaterial({ color: palette.ground, roughness: .86, metalness: .04 }));
-    ground.rotation.x = -Math.PI / 2; ground.position.y = -.12; ground.receiveShadow = true; this.world.add(ground);
-    const highland = new THREE.Mesh(new THREE.PlaneGeometry(10.5, 23), new THREE.MeshStandardMaterial({ color: palette.highland, roughness: .94 }));
-    highland.rotation.x = -Math.PI / 2; highland.position.set(-7.9, -.08, 0); highland.receiveShadow = true; this.world.add(highland);
-    const beach = new THREE.Mesh(new THREE.PlaneGeometry(6.2, 20), new THREE.MeshStandardMaterial({ color: season === 'winter' ? 0xcbdce1 : 0xb98955, roughness: .95 }));
-    beach.rotation.x = -Math.PI / 2; beach.position.set(10.2, -.07, -.5); this.world.add(beach);
+    const groundColor = new THREE.Color(palette.ground).multiplyScalar(season === 'winter' ? .72 : .42);
+    const highlandColor = new THREE.Color(palette.highland).multiplyScalar(season === 'winter' ? .76 : .46);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(34, 30), new THREE.MeshStandardMaterial({ color: groundColor, roughness: .86, metalness: .04 }));
+    ground.rotation.x = -Math.PI / 2; ground.position.y = -.12; ground.receiveShadow = true; ground.userData.expeditionGround = true; this.world.add(ground);
+    const highland = new THREE.Mesh(new THREE.PlaneGeometry(10.5, 23), new THREE.MeshStandardMaterial({
+      color: highlandColor, roughness: .94, transparent: true, opacity: .48,
+    }));
+    highland.rotation.x = -Math.PI / 2; highland.position.set(-7.9, -.08, 0); highland.receiveShadow = true; highland.userData.naturalOverlay = true; this.world.add(highland);
+    const beach = new THREE.Mesh(new THREE.PlaneGeometry(6.2, 20), new THREE.MeshStandardMaterial({
+      color: season === 'winter' ? 0x829ba7 : 0x59432d, roughness: .95, transparent: true, opacity: .42,
+    }));
+    beach.rotation.x = -Math.PI / 2; beach.position.set(10.2, -.07, -.5); beach.userData.naturalOverlay = true; this.world.add(beach);
     const riverMat = new THREE.MeshPhysicalMaterial({
-      color: palette.water, emissive: palette.waterGlow, emissiveIntensity: .18, roughness: season === 'winter' ? .08 : .22,
+      color: new THREE.Color(palette.water).multiplyScalar(.72), emissive: palette.water, emissiveIntensity: .24, roughness: season === 'winter' ? .08 : .18,
       metalness: season === 'winter' ? .52 : .06, transmission: season === 'winter' ? .22 : .12, transparent: true, opacity: .9,
     });
-    const river = new THREE.Mesh(new THREE.PlaneGeometry(4.25, 24, 8, 28), riverMat); river.rotation.x = -Math.PI / 2; river.position.set(0, -.035, -1); river.receiveShadow = true; river.userData.river = true; this.world.add(river);
+    const river = new THREE.Mesh(new THREE.PlaneGeometry(4.25, 24, 8, 28), riverMat); river.rotation.x = -Math.PI / 2; river.position.set(0, -.035, -1); river.receiveShadow = true; river.userData.river = true; river.userData.waterFlow = true; this.world.add(river); this.animatedWorld.push(river);
     const road = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 23), new THREE.MeshStandardMaterial({ color: season === 'winter' ? 0x80939c : 0x44545a, roughness: .78, metalness: .15 }));
     road.rotation.x = -Math.PI / 2; road.position.set(4.6, -.015, .4); road.rotation.z = -.05; this.world.add(road);
     for (let z = -9; z <= 9; z += 2) {
@@ -422,13 +457,14 @@ export class ThreeRenderer {
     for (let i = 0; i < 13; i += 1) {
       const h = 1.8 + (i % 4) * .65;
       const mountain = new THREE.Mesh(new THREE.ConeGeometry(1.25 + (i % 3) * .3, h, 7), rockMat);
-      mountain.position.set(-13.2 + i * 2.15, h / 2 - .15, -11.4 - (i % 2) * .45); mountain.rotation.y = i * .53; mountain.castShadow = true; this.world.add(mountain);
+      mountain.position.set(-13.2 + i * 2.15, h / 2 - .15, -15.2 - (i % 2) * .55); mountain.rotation.y = i * .53; mountain.castShadow = true; mountain.userData.proceduralVista = true; this.world.add(mountain);
     }
     const trunkMat = material(0x543b28, 0x1c120d, .02, .95); const leafMat = material(palette.leaf, palette.leafGlow, .12, .82);
     for (let i = 0; i < 18; i += 1) {
       const tree = new THREE.Group(); const trunk = new THREE.Mesh(new THREE.CylinderGeometry(.07, .12, .72, 7), trunkMat); trunk.position.y = .36; tree.add(trunk);
       const crown = new THREE.Mesh(new THREE.IcosahedronGeometry(.38 + (i % 3) * .08, 1), leafMat); crown.position.y = .88; crown.scale.set(1.25, .95, 1); tree.add(crown);
-      tree.position.set(i % 2 ? -10.8 + (i % 5) * 1.4 : 7.3 + (i % 4) * 1.45, .02, -8.6 + Math.floor(i / 5) * 4.4); tree.rotation.y = i * .7; this.world.add(tree);
+      tree.position.set(i % 2 ? -10.8 + (i % 5) * 1.4 : 7.3 + (i % 4) * 1.45, .02, -8.6 + Math.floor(i / 5) * 4.4); tree.rotation.y = i * .7;
+      tree.scale.setScalar(.78); tree.userData.proceduralFoliage = true; this.world.add(tree);
     }
     for (let i = 0; i < 20; i += 1) {
       const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(.18 + (i % 3) * .09, 0), rockMat); stone.scale.y = .55;
@@ -457,6 +493,8 @@ export class ThreeRenderer {
       }
       cloud.position.set(-13 + i * 4.5, 5.8 + (i % 3) * .7, -13.2 - (i % 2)); cloud.userData.distantCloud = true; this.world.add(cloud);
     }
+    this.addTacticalBattlefield(palette.water, SEASONS[season].accent, palette.blossom, true);
+    this.addMountainSeaCitadel(palette, season);
 
     this.safeZone = new THREE.Mesh(new THREE.RingGeometry(.985, 1, 96), new THREE.MeshBasicMaterial({ color: SEASONS[season].accent, transparent: true, opacity: .65, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
     this.safeZone.rotation.x = -Math.PI / 2; this.safeZone.position.y = .04; this.safeZone.visible = false; this.world.add(this.safeZone);
@@ -468,6 +506,226 @@ export class ThreeRenderer {
       particle.scale.set(season === 'autumn' ? 2 : 1, season === 'winter' ? 1 : 1, season === 'autumn' ? .4 : 1); particle.userData.weather = true; particle.userData.seed = Math.random() * 10;
       this.world.add(particle); this.weatherParticles.push(particle);
     }
+    void this.attachExpeditionArt(generation);
+  }
+
+  private async attachExpeditionArt(generation: number): Promise<void> {
+    const loader = new THREE.TextureLoader();
+    const base = import.meta.env.BASE_URL;
+    const [backdrop, floor] = await Promise.all([
+      loader.loadAsync(`${base}assets/environment/mountain-sea-citadel.jpg`),
+      loader.loadAsync(`${base}assets/environment/neon-tactical-floor.jpg`),
+    ]);
+    if (generation !== this.worldGeneration || this.viewMode !== 'arena' || !this.expeditionSeason) {
+      backdrop.dispose(); floor.dispose(); return;
+    }
+    backdrop.colorSpace = THREE.SRGBColorSpace;
+    backdrop.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    const backdropMaterial = new THREE.MeshBasicMaterial({
+      map: backdrop, transparent: true, opacity: 0, fog: false, depthWrite: false,
+    });
+    const plate = new THREE.Mesh(new THREE.PlaneGeometry(72, 40.5), backdropMaterial);
+    plate.position.set(0, -8, -24); plate.renderOrder = -10; plate.userData.backdropFade = true;
+    this.world.add(plate); this.animatedWorld.push(plate);
+
+    floor.colorSpace = THREE.SRGBColorSpace;
+    floor.wrapS = THREE.RepeatWrapping; floor.wrapT = THREE.RepeatWrapping;
+    floor.repeat.set(.82, 4.2);
+    floor.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    const arenaFloor = floor.clone();
+    arenaFloor.wrapS = THREE.RepeatWrapping; arenaFloor.wrapT = THREE.RepeatWrapping;
+    arenaFloor.repeat.set(1.14, 1.02);
+    arenaFloor.anisotropy = floor.anisotropy;
+    arenaFloor.needsUpdate = true;
+    this.world.traverse((object) => {
+      if (object.userData.proceduralVista) {
+        object.userData.forceHidden = true; object.visible = false;
+      }
+      if (object.userData.proceduralFoliage) {
+        object.userData.forceHidden = true; object.visible = false;
+      }
+      if (object.userData.expeditionGround && object instanceof THREE.Mesh) {
+        const groundMaterial = object.material as THREE.MeshStandardMaterial;
+        groundMaterial.map = arenaFloor;
+        groundMaterial.color.setHex(0x93a7b3);
+        groundMaterial.roughness = .68;
+        groundMaterial.metalness = .3;
+        groundMaterial.needsUpdate = true;
+      }
+      if (object.userData.naturalOverlay && object instanceof THREE.Mesh) {
+        const overlayMaterial = object.material as THREE.MeshStandardMaterial;
+        overlayMaterial.color.multiplyScalar(.62);
+        overlayMaterial.opacity = .34;
+        overlayMaterial.needsUpdate = true;
+      }
+      if (!object.userData.tacticalFloor || !(object instanceof THREE.Mesh)) return;
+      const laneMaterial = object.material as THREE.MeshStandardMaterial;
+      laneMaterial.map = floor;
+      laneMaterial.color.setHex(0xdce7ee);
+      laneMaterial.roughness = .54;
+      laneMaterial.metalness = .42;
+      laneMaterial.transparent = false;
+      laneMaterial.opacity = 1;
+      laneMaterial.needsUpdate = true;
+    });
+  }
+
+  private addTacticalBattlefield(primary: number, accent: number, danger: number, natural: boolean): void {
+    const deckMat = material(natural ? 0x172a2d : 0x111a28, primary, .16, .48);
+    const edgeMat = material(0x152330, primary, .82, .28);
+    const coverMat = material(natural ? 0x182a31 : 0x1c2735, accent, .22, .48);
+    const warningMat = material(0x28231a, 0xffb928, .72, .35);
+
+    // Three readable lanes, inspired by objective-based arena maps, remain
+    // wide enough for tablet controls and young players.
+    const laneDefinitions = [
+      { x: -7.1, z: .3, w: 3.1, d: 17.8, color: primary },
+      { x: 0, z: -.8, w: 3.25, d: 19.6, color: accent },
+      { x: 7.1, z: .3, w: 3.1, d: 17.8, color: danger },
+    ];
+    laneDefinitions.forEach((lane, index) => {
+      const laneDeck = new THREE.Mesh(new THREE.PlaneGeometry(lane.w, lane.d), new THREE.MeshStandardMaterial({
+        color: natural ? 0x263b3a : 0x121d29, emissive: lane.color, emissiveIntensity: .045,
+        roughness: natural ? .84 : .5, metalness: natural ? .08 : .42, transparent: true, opacity: natural ? .42 : .78,
+      }));
+      laneDeck.rotation.x = -Math.PI / 2; laneDeck.position.set(lane.x, -.018 + index * .002, lane.z); laneDeck.receiveShadow = true; laneDeck.userData.tacticalFloor = true; this.world.add(laneDeck);
+      for (let z = -7.5; z <= 7.5; z += 2.5) {
+        const chevron = new THREE.Mesh(new THREE.BoxGeometry(.56, .025, .07), new THREE.MeshBasicMaterial({ color: lane.color, transparent: true, opacity: .56, blending: THREE.AdditiveBlending }));
+        chevron.position.set(lane.x, .018, z); chevron.rotation.y = index === 1 ? 0 : index === 0 ? -.18 : .18; chevron.userData.balancedDetail = true; this.world.add(chevron);
+      }
+    });
+
+    const bridges = [
+      { x: -3.45, z: -2.4, w: 3.25, d: 1.22, rot: 0 },
+      { x: 3.45, z: -2.4, w: 3.25, d: 1.22, rot: 0 },
+      { x: 0, z: 3.2, w: 3.45, d: 1.12, rot: Math.PI / 2 },
+    ];
+    bridges.forEach((bridge, index) => {
+      const deck = roundedBox(bridge.w, .18, bridge.d, .12, deckMat); deck.position.set(bridge.x, .09, bridge.z); deck.rotation.y = bridge.rot; this.world.add(deck);
+      for (const side of [-1, 1]) {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(bridge.w * .9, .1, .06), index === 2 ? warningMat : edgeMat);
+        rail.position.set(bridge.x, .28, bridge.z + side * bridge.d * .38); rail.rotation.y = bridge.rot; this.world.add(rail);
+      }
+    });
+
+    const coverPositions = [
+      [-4.8, 5.0, 1.5, .64, .28], [4.8, 5.0, 1.5, .64, -.28],
+      [-8.9, 2.0, 1.4, .68, -.18], [8.9, 2.0, 1.4, .68, .18],
+      [-4.7, -5.3, 1.55, .68, -.18], [4.7, -5.3, 1.55, .68, .18],
+      [-9.2, -5.8, 1.2, .62, .35], [9.2, -5.8, 1.2, .62, -.35],
+    ] as const;
+    coverPositions.forEach(([x, z, w, d, rot], index) => {
+      const root = new THREE.Group(); root.position.set(x, 0, z); root.rotation.y = rot;
+      const base = roundedBox(w, .72 + index % 2 * .16, d, .12, index % 3 === 0 ? warningMat : coverMat); base.position.y = .36; root.add(base);
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(w * .72, .08, d + .025), new THREE.MeshBasicMaterial({ color: index % 2 ? accent : primary, transparent: true, opacity: .82, blending: THREE.AdditiveBlending }));
+      strip.position.y = .62; root.add(strip);
+      root.userData.balancedDetail = true; this.world.add(root);
+    });
+
+    const nodeSpecs: Array<{ id: TacticalNode['id']; pos: Vec2; color: number; label: string }> = [
+      { id: 'a', pos: { x: -7.1, z: -.8 }, color: 0x35e8ff, label: 'A' },
+      { id: 'core', pos: { x: 0, z: -2.4 }, color: 0xffd84a, label: 'CORE' },
+      { id: 'b', pos: { x: 7.1, z: -.8 }, color: 0xff5ecb, label: 'B' },
+    ];
+    nodeSpecs.forEach((spec) => {
+      const root = new THREE.Group(); root.position.set(spec.pos.x, 0, spec.pos.z);
+      const pad = new THREE.Mesh(new THREE.CylinderGeometry(spec.id === 'core' ? 1.3 : 1.08, spec.id === 'core' ? 1.42 : 1.18, .18, 36), deckMat);
+      pad.position.y = .08; pad.receiveShadow = true; root.add(pad);
+      const outer = new THREE.Mesh(new THREE.TorusGeometry(spec.id === 'core' ? 1.18 : .96, .055, 8, 48), new THREE.MeshBasicMaterial({ color: spec.color, transparent: true, opacity: .78, blending: THREE.AdditiveBlending, depthWrite: false }));
+      outer.rotation.x = Math.PI / 2; outer.position.y = .22; outer.userData.spinSpeed = spec.id === 'core' ? -.72 : .54; root.add(outer); this.animatedWorld.push(outer);
+      const progress = new THREE.Mesh(new THREE.TorusGeometry(spec.id === 'core' ? .9 : .72, .09, 8, 48), new THREE.MeshBasicMaterial({ color: spec.color, transparent: true, opacity: .86, blending: THREE.AdditiveBlending, depthWrite: false }));
+      progress.rotation.x = Math.PI / 2; progress.position.y = .25; progress.scale.setScalar(.05); root.add(progress);
+      const core = new THREE.Mesh(new THREE.CylinderGeometry(.28, .42, spec.id === 'core' ? 1.6 : .88, 12), material(spec.color, spec.color, 1.7, .2));
+      core.position.y = spec.id === 'core' ? .92 : .56; root.add(core);
+      const beam = new THREE.Mesh(new THREE.CylinderGeometry(.055, .16, spec.id === 'core' ? 5.5 : 3.2, 12, 1, true), new THREE.MeshBasicMaterial({ color: spec.color, transparent: true, opacity: .22, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+      beam.position.y = spec.id === 'core' ? 3.1 : 1.9; root.add(beam);
+      root.userData.progress = progress; root.userData.beam = beam; root.userData.core = core; root.userData.label = spec.label;
+      this.world.add(root); this.tacticalNodeMeshes.set(spec.id, root);
+    });
+  }
+
+  private addMountainSeaCitadel(
+    palette: ReturnType<ThreeRenderer['seasonPalette']>,
+    season: SeasonId,
+  ): void {
+    const cliffMat = material(palette.mountain, palette.mountainGlow, .08, .9);
+    const fortressMat = material(0x19313b, SEASONS[season].accent, .24, .42);
+    const lightMat = material(SEASONS[season].accent, SEASONS[season].accent, 1.55, .18);
+    const citadel = new THREE.Group(); citadel.position.set(0, 0, -13.1);
+    const mesa = new THREE.Mesh(new THREE.CylinderGeometry(5.1, 6.4, 2.9, 12), cliffMat); mesa.position.y = .8; mesa.scale.z = .62; citadel.add(mesa);
+    const keep = roundedBox(4.4, 2.35, 2.1, .22, fortressMat); keep.position.y = 2.72; citadel.add(keep);
+    for (const x of [-2.45, 2.45]) {
+      const tower = new THREE.Mesh(new THREE.CylinderGeometry(.72, .9, 3.6, 10), fortressMat); tower.position.set(x, 2.85, 0); citadel.add(tower);
+      const crown = new THREE.Mesh(new THREE.TorusGeometry(.62, .09, 8, 30), lightMat); crown.position.set(x, 4.58, 0); crown.rotation.x = Math.PI / 2; crown.userData.spinSpeed = x < 0 ? .38 : -.38; citadel.add(crown); this.animatedWorld.push(crown);
+    }
+    const citadelCore = new THREE.Mesh(new THREE.OctahedronGeometry(.55, 1), lightMat); citadelCore.position.set(0, 4.3, .1); citadelCore.userData.floatPhase = 1.7; citadel.add(citadelCore); this.animatedWorld.push(citadelCore);
+    const gate = roundedBox(1.25, 1.65, .24, .14, lightMat); gate.position.set(0, 2.25, 1.12); citadel.add(gate);
+    citadel.userData.balancedDetail = true; citadel.userData.proceduralVista = true; this.world.add(citadel);
+
+    // Layered settlements and cliff terraces create the long sight-lines of
+    // the mountain/sea reference without shrinking the readable combat floor.
+    for (const side of [-1, 1]) {
+      const terrace = new THREE.Mesh(new THREE.BoxGeometry(6.4, 2.2, 4.3), cliffMat);
+      terrace.position.set(side * 8.7, .45, -13.3); terrace.rotation.y = side * .08; terrace.castShadow = true; terrace.userData.proceduralVista = true; this.world.add(terrace);
+      for (let i = 0; i < 4; i += 1) {
+        const home = new THREE.Group();
+        const shell = roundedBox(1.05, .78 + (i % 2) * .2, .9, .12, fortressMat); shell.position.y = .42; home.add(shell);
+        const roof = new THREE.Mesh(new THREE.ConeGeometry(.78, .55, 4), material(i % 2 ? 0x284c54 : 0x403341, SEASONS[season].accent, .18, .58));
+        roof.position.y = 1.12; roof.rotation.y = Math.PI / 4; home.add(roof);
+        const windowLight = new THREE.Mesh(new THREE.BoxGeometry(.34, .18, .035), lightMat); windowLight.position.set(0, .56, .47); home.add(windowLight);
+        home.position.set(side * (6.3 + i * 1.25), 1.54 + (i % 2) * .18, -12.1 - (i % 2) * 1.2);
+        home.rotation.y = side * -.12; home.userData.balancedDetail = true; home.userData.proceduralVista = true; this.world.add(home);
+      }
+    }
+
+    const cableCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-10.8, 5.2, -12.1), new THREE.Vector3(0, 6.6, -14.4), new THREE.Vector3(10.8, 5.2, -12.1),
+    ]);
+    const cable = new THREE.Mesh(new THREE.TubeGeometry(cableCurve, 52, .025, 5, false), new THREE.MeshBasicMaterial({ color: 0x8fefff, transparent: true, opacity: .44 }));
+    cable.userData.balancedDetail = true; cable.userData.proceduralVista = true; this.world.add(cable);
+    const gondola = roundedBox(1.15, .76, .82, .15, material(0xffc928, 0xffa318, .62, .32));
+    gondola.position.set(-5.3, 5.85, -13.25); gondola.userData.floatPhase = 3.4; gondola.userData.gondola = true; gondola.userData.balancedDetail = true; gondola.userData.proceduralVista = true; this.world.add(gondola); this.animatedWorld.push(gondola);
+
+    const stormWall = new THREE.Mesh(new THREE.TorusGeometry(14.7, .075, 8, 128), new THREE.MeshBasicMaterial({
+      color: season === 'summer' ? 0xb98cff : 0x53e9ff, transparent: true, opacity: .34,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    stormWall.rotation.x = Math.PI / 2; stormWall.position.y = 1.15; stormWall.userData.spinSpeed = .025; stormWall.userData.balancedDetail = true;
+    this.world.add(stormWall); this.animatedWorld.push(stormWall);
+
+    for (const side of [-1, 1]) {
+      const cliff = new THREE.Mesh(new THREE.DodecahedronGeometry(2.4, 1), cliffMat);
+      cliff.scale.set(1.6, 1.25, .92); cliff.position.set(side * 11.2, 1.45, -10.8); cliff.rotation.y = side * .34; cliff.userData.proceduralVista = true; this.world.add(cliff);
+      const fall = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 3.4, 1, 8), new THREE.MeshBasicMaterial({ color: 0xa9f5ff, transparent: true, opacity: .58, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+      fall.position.set(side * 10.5, 1.65, -8.9); fall.rotation.z = side * .05; fall.userData.flowPhase = side; fall.userData.proceduralVista = true; this.world.add(fall); this.animatedWorld.push(fall);
+    }
+  }
+
+  private animateWorld(dt: number): void {
+    this.animatedWorld.forEach((object) => {
+      const spinSpeed = object.userData.spinSpeed as number | undefined;
+      if (spinSpeed) object.rotation.z += dt * spinSpeed;
+      const floatPhase = object.userData.floatPhase as number | undefined;
+      if (floatPhase !== undefined) {
+        object.rotation.y += dt * .65;
+        if (object.userData.gondola) {
+          object.position.x = Math.sin(this.elapsed * .18) * 7.2;
+          object.position.y = 6.15 + Math.cos(this.elapsed * .36) * .36;
+        } else object.position.y = 4.3 + Math.sin(this.elapsed * 1.7 + floatPhase) * .18;
+      }
+      const flowPhase = object.userData.flowPhase as number | undefined;
+      if (flowPhase !== undefined && object instanceof THREE.Mesh) {
+        (object.material as THREE.MeshBasicMaterial).opacity = .48 + Math.sin(this.elapsed * 4.2 + flowPhase) * .14;
+      }
+      if (object.userData.waterFlow && object instanceof THREE.Mesh) {
+        const waterMaterial = object.material as THREE.MeshPhysicalMaterial;
+        waterMaterial.emissiveIntensity = .2 + Math.sin(this.elapsed * 1.8) * .055;
+      }
+      if (object.userData.backdropFade && object instanceof THREE.Mesh) {
+        const backdropMaterial = object.material as THREE.MeshBasicMaterial;
+        backdropMaterial.opacity = Math.min(.94, backdropMaterial.opacity + dt * 1.7);
+      }
+    });
   }
 
   private seasonPalette(season: SeasonId): { sky: number; fog: number; hemi: number; sun: number; ground: number; highland: number; water: number; waterGlow: number; mountain: number; mountainGlow: number; leaf: number; leafGlow: number; blossom: number; particle: number } {
@@ -497,7 +755,7 @@ export class ThreeRenderer {
     if (!this.reduceFlashes && this.simulation?.weather.warning && this.expeditionSeason === 'summer') {
       const pulse = .78 + Math.max(0, Math.sin(this.elapsed * 7)) * .2;
       this.renderer.toneMappingExposure = pulse;
-    } else if (this.viewMode === 'arena') this.renderer.toneMappingExposure = this.expeditionSeason === 'winter' ? .72 : .8;
+    } else if (this.viewMode === 'arena') this.renderer.toneMappingExposure = this.expeditionSeason === 'winter' ? .7 : this.expeditionSeason ? .66 : .74;
     this.world.children.forEach((child) => {
       if (child.userData.routeBeacon && child instanceof THREE.Mesh && child.geometry.type === 'RingGeometry') child.rotation.z += dt * .7;
       if (child.userData.distantCloud) child.position.x = child.position.x > 16 ? -16 : child.position.x + dt * .08;
@@ -505,6 +763,7 @@ export class ThreeRenderer {
   }
 
   private buildWorkshop(loadout: TankLoadout, season: SeasonId): void {
+    this.worldGeneration += 1;
     const palette = this.seasonPalette(season);
     this.weatherParticles = [];
     this.scene.background = new THREE.Color(palette.sky);
@@ -639,11 +898,18 @@ export class ThreeRenderer {
     sim.players.forEach((player) => {
       const group = this.playerMeshes.get(player.id); if (!group) return;
       group.position.set(player.pos.x, player.alive ? 0 : -.25, player.pos.z);
-      group.rotation.y = Math.atan2(player.aim.x, player.aim.z);
+      // The modeled barrel faces local -Z, so add PI to align it with the
+      // simulation aim vector and the projectile trajectory.
+      group.rotation.y = Math.atan2(player.aim.x, player.aim.z) + Math.PI;
       group.visible = player.alive || player.downTimer > 0;
       group.userData.trackTime = (group.userData.trackTime ?? 0) + .12;
       const turret = group.userData.turret as THREE.Group | undefined;
-      if (turret) turret.position.y = .64 + Math.sin(this.elapsed * 4 + player.slot) * .025;
+      if (turret) {
+        const recoil = (group.userData.recoil as number | undefined) ?? 0;
+        turret.position.y = .64 + Math.sin(this.elapsed * 4 + player.slot) * .025;
+        turret.position.z = recoil;
+        group.userData.recoil = Math.max(0, recoil - .045);
+      }
       const companion = group.userData.companion as THREE.Group | undefined;
       if (companion) { companion.position.y = 1.25 + Math.sin(this.elapsed * 3.2 + player.slot) * .14; companion.rotation.y += .025; }
       const shield = group.userData.shield as THREE.Mesh | undefined;
@@ -652,6 +918,13 @@ export class ThreeRenderer {
       if (shield) { shield.visible = player.shield > 0; shield.rotation.y += .025; }
       if (player.alive) this.spawnSurfaceTrail(player);
     });
+
+    const livingPlayers = sim.players.filter((player) => player.alive);
+    if (livingPlayers.length) {
+      const focus = livingPlayers.reduce((sum, player) => ({ x: sum.x + player.pos.x, z: sum.z + player.pos.z }), { x: 0, z: 0 });
+      focus.x /= livingPlayers.length; focus.z /= livingPlayers.length;
+      this.cameraTarget.lerp(new THREE.Vector3(THREE.MathUtils.clamp(focus.x * .22, -1.8, 1.8), 0, THREE.MathUtils.clamp(focus.z * .16, -1.3, 1.3)), .055);
+    }
 
     sim.enemies.forEach((enemy) => {
       const group = this.enemyMeshes.get(enemy.id); if (!group) return;
@@ -689,6 +962,22 @@ export class ThreeRenderer {
       const mesh = this.bulletMeshes.get(bullet.id); if (!mesh) return;
       mesh.position.set(bullet.pos.x, bullet.team === 'player' ? .75 : .55, bullet.pos.z);
       mesh.rotation.y = Math.atan2(bullet.vel.x, bullet.vel.z);
+    });
+    sim.tacticalNodes.forEach((node) => {
+      const group = this.tacticalNodeMeshes.get(node.id); if (!group) return;
+      const progress = group.userData.progress as THREE.Mesh | undefined;
+      const beam = group.userData.beam as THREE.Mesh | undefined;
+      const core = group.userData.core as THREE.Mesh | undefined;
+      if (progress) {
+        const scale = .08 + node.progress * .92;
+        progress.scale.setScalar(scale);
+        (progress.material as THREE.MeshBasicMaterial).opacity = node.captured ? .98 : .42 + node.progress * .46;
+      }
+      if (beam) {
+        (beam.material as THREE.MeshBasicMaterial).opacity = node.captured ? .52 + Math.sin(this.elapsed * 6) * .12 : .12 + node.progress * .28;
+        beam.scale.y = node.captured ? 1.28 : .55 + node.progress * .45;
+      }
+      if (core) core.rotation.y += node.captured ? .045 : .015;
     });
     sim.pickups.forEach((pickup) => {
       const group = this.pickupMeshes.get(pickup.id); if (!group) return;
@@ -935,6 +1224,10 @@ export class ThreeRenderer {
     }
     const mesh = new THREE.Mesh(this.bulletGeometry[bullet.team], bulletMaterial);
     mesh.userData.retainSharedResources = true;
+    if (bullet.team === 'player' && this.quality !== 'battery') {
+      const glow = new THREE.PointLight(bullet.color, this.quality === 'high' ? 1.8 : .9, 2.6, 2);
+      glow.position.z = -.18; mesh.add(glow);
+    }
     mesh.rotation.x = Math.PI / 2; return mesh;
   }
 
@@ -1006,13 +1299,18 @@ export class ThreeRenderer {
 
   private applyQualityVisuals(): void {
     const factor = this.quality === 'high' ? 1 : this.quality === 'balanced' ? .74 : .42;
-    const base = this.viewMode === 'workshop' ? .18 : this.expeditionSeason === 'summer' ? .42 : .36;
+    const base = this.viewMode === 'workshop' ? .18 : this.expeditionSeason ? .52 : .44;
     const comfortFactor = this.reduceFlashes ? .35 : 1;
-    this.bloom.threshold = this.reduceFlashes ? .9 : this.viewMode === 'workshop' ? .88 : .76;
+    this.bloom.threshold = this.reduceFlashes ? .9 : this.viewMode === 'workshop' ? .88 : this.expeditionSeason ? .68 : .72;
     this.bloom.strength = base * factor * comfortFactor;
     this.bloom.radius = this.reduceFlashes ? .16 : this.quality === 'high' ? .38 : this.quality === 'balanced' ? .3 : .16;
     this.bloom.enabled = this.quality !== 'battery';
-    this.renderer.toneMappingExposure = this.viewMode === 'workshop' ? .52 : this.expeditionSeason === 'winter' ? .72 : .8;
+    this.renderer.toneMappingExposure = this.viewMode === 'workshop' ? .52 : this.expeditionSeason === 'winter' ? .7 : this.expeditionSeason ? .66 : .74;
+    this.world.traverse((object) => {
+      if (object.userData.forceHidden) { object.visible = false; return; }
+      if (object.userData.highDetail) object.visible = this.quality === 'high';
+      if (object.userData.balancedDetail) object.visible = this.quality !== 'battery';
+    });
   }
 
   private updateReplay(): void {
@@ -1066,7 +1364,7 @@ export class ThreeRenderer {
     this.camera.aspect = width / height;
     const compact = width / height < .78;
     this.camera.fov = compact ? 56 : 44;
-    if (this.viewMode !== 'workshop') this.camera.position.z = compact ? 21 : 18.5;
+    if (this.viewMode !== 'workshop') this.camera.position.z = compact ? 23 : 21.4;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height, false);
     this.composer.setSize(width, height);
@@ -1093,6 +1391,7 @@ function hasRetainedFlag(object: THREE.Object3D, root: THREE.Object3D, flag: 're
 export function disposeObjectTree(root: THREE.Object3D): void {
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
   root.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
     if (!hasRetainedFlag(object, root, 'retainSharedGeometry')) geometries.add(object.geometry);
@@ -1101,6 +1400,10 @@ export function disposeObjectTree(root: THREE.Object3D): void {
     entries.forEach((entry) => materials.add(entry));
   });
   geometries.forEach((geometry) => geometry.dispose());
+  materials.forEach((entry) => {
+    Object.values(entry).forEach((value) => { if (value instanceof THREE.Texture) textures.add(value); });
+  });
+  textures.forEach((texture) => texture.dispose());
   materials.forEach((entry) => entry.dispose());
 }
 

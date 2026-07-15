@@ -157,7 +157,7 @@ export class UIController {
       : sim.dailyRule ? `每日 ${Math.max(0, Math.ceil(sim.dailyRule.timeLimit - sim.elapsed))} 秒`
         : this.options.mode === 'last-core' ? `安全区 ${sim.safeRadius.toFixed(1)}m` : `第 ${Math.max(1, sim.wave)} 波`;
     byId('score-label').textContent = Math.round(sim.score).toString().padStart(6, '0');
-    byId('enemy-label').textContent = `伙伴机 ${sim.enemies.length}`;
+    byId('enemy-label').textContent = sim.options.testDrive ? '战术节点训练' : `敌方机 ${sim.enemies.length}`;
     byId('combo-label').textContent = `连击 x${sim.combo}`;
     byId('combo-label').classList.toggle('is-hot', sim.combo >= 3);
     if (sim.dailyRule) {

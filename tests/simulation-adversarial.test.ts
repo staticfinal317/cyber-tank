@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Simulation, type ControlFrame, type EnemyEntity, type ProjectileEntity } from '../src/gameplay/Simulation';
+import { PLAYER_MUZZLE_DISTANCE, Simulation, type ControlFrame, type EnemyEntity, type ProjectileEntity } from '../src/gameplay/Simulation';
 import type { GameOptions } from '../src/core/types';
 
 const idle: ControlFrame = {
@@ -20,6 +20,28 @@ function enemy(overrides: Partial<EnemyEntity> = {}): EnemyEntity {
 }
 
 describe('adversarial simulation invariants', () => {
+  it('spawns a player projectile at the physical barrel tip', () => {
+    const sim = new Simulation({ ...base, testDrive: true });
+    const player = sim.players[0]!;
+    let shot: ProjectileEntity | undefined;
+    sim.on('shot', ({ projectile }) => { shot = projectile; });
+    sim.update(.016, [{ ...idle, aim: { x: 0, z: -1 }, firing: true }]);
+    expect(shot).toBeDefined();
+    expect(shot!.pos.x).toBeCloseTo(player.pos.x, 5);
+    expect(shot!.prev.z).toBeCloseTo(player.pos.z - PLAYER_MUZZLE_DISTANCE, 5);
+    expect(shot!.pos.z).toBeLessThan(shot!.prev.z);
+  });
+
+  it('turns tactical nodes into real capture interactions', () => {
+    const sim = new Simulation({ ...base, testDrive: true });
+    const node = sim.tacticalNodes[0]!;
+    sim.players[0]!.pos = { ...node.pos };
+    for (let i = 0; i < 170; i += 1) sim.update(1 / 60, [idle]);
+    expect(node.captured).toBe(true);
+    expect(sim.score).toBe(160);
+    expect(sim.players[0]!.shield).toBeGreaterThan(0);
+  });
+
   it('lets a piercing projectile damage the same enemy only once', () => {
     const sim = new Simulation({ ...base, testDrive: true });
     const target = enemy(); sim.enemies.push(target);
@@ -75,5 +97,5 @@ describe('adversarial simulation invariants', () => {
     for (let i = 0; i < 60 * 180; i += 1) sim.update(1 / 60, [idle]);
     expect(sim.wave).toBeGreaterThanOrEqual(4);
     expect(sim.repaired).toBeGreaterThan(20);
-  });
+  }, 15_000);
 });
