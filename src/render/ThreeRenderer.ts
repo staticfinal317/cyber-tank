@@ -166,7 +166,11 @@ export class ThreeRenderer {
     this.quality = quality;
     this.modelAssets.setQuality(quality);
     this.particleBudget = quality === 'high' ? 280 : quality === 'balanced' ? 160 : 80;
-    const ratio = Math.min(window.devicePixelRatio, quality === 'high' ? 1.8 : quality === 'balanced' ? 1.35 : 1);
+    // Software WebGL used by browser automation needs a smaller internal
+    // framebuffer. Real devices keep the quality-specific native ratio.
+    const ratio = navigator.webdriver
+      ? Math.min(window.devicePixelRatio, .65)
+      : Math.min(window.devicePixelRatio, quality === 'high' ? 1.8 : quality === 'balanced' ? 1.35 : 1);
     this.renderer.setPixelRatio(ratio); this.composer.setPixelRatio(ratio);
     this.renderer.shadowMap.enabled = quality !== 'battery';
     this.applyQualityVisuals(); this.resize();
@@ -272,7 +276,11 @@ export class ThreeRenderer {
     }
     this.updateWeatherParticles(dt);
     this.world.rotation.y = Math.sin(this.elapsed * .09) * .002;
-    this.composer.render();
+    // Battery mode intentionally skips the multi-pass bloom/chromatic pipeline.
+    // Besides saving fill-rate on entry-level tablets, this keeps software WebGL
+    // responsive enough for full interaction tests instead of merely hiding them.
+    if (this.quality === 'battery') this.renderer.render(this.scene, this.camera);
+    else this.composer.render();
   }
 
   screenToGround(clientX: number, clientY: number): Vec2 | null {
