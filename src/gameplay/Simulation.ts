@@ -90,6 +90,15 @@ export interface PickupEntity {
   life: number;
 }
 
+export interface TacticalNode {
+  id: 'a' | 'core' | 'b';
+  pos: Vec2;
+  radius: number;
+  color: number;
+  progress: number;
+  captured: boolean;
+}
+
 export type { WorldEventKind } from './WorldEvents';
 
 export interface SimulationEvents {
@@ -112,6 +121,7 @@ type Listener<K extends keyof SimulationEvents> = (payload: SimulationEvents[K])
 const ABILITY_BASE: Record<AbilityId, number> = { shield: 12, repair: 16, dash: 7, storm: 20 };
 const ARENA_X = 12.5;
 const ARENA_Z = 10.5;
+export const PLAYER_MUZZLE_DISTANCE = 1.7;
 
 function len(v: Vec2): number { return Math.hypot(v.x, v.z); }
 function normalized(v: Vec2, fallback: Vec2 = { x: 0, z: -1 }): Vec2 {
@@ -128,6 +138,11 @@ export class Simulation {
   readonly enemies: EnemyEntity[] = [];
   readonly projectiles: ProjectileEntity[] = [];
   readonly pickups: PickupEntity[] = [];
+  readonly tacticalNodes: TacticalNode[] = [
+    { id: 'a', pos: { x: -7.1, z: -.8 }, radius: 1.72, color: 0x35e8ff, progress: 0, captured: false },
+    { id: 'core', pos: { x: 0, z: -2.4 }, radius: 1.82, color: 0xffd84a, progress: 0, captured: false },
+    { id: 'b', pos: { x: 7.1, z: -.8 }, radius: 1.72, color: 0xff5ecb, progress: 0, captured: false },
+  ];
   readonly encounteredEnemies = new Set<EnemyKind>();
   readonly replayFrames: ReplayFrame[] = [];
   readonly bounds = { x: ARENA_X, z: ARENA_Z };
@@ -183,8 +198,11 @@ export class Simulation {
     this.weather = weatherAt(0, options.season ?? 'spring');
     const chassisHp = options.chassis === 'guardian' ? 25 : options.chassis === 'comet' ? -10 : 0;
     const hp = (100 + chassisHp + (techRanks.armor ?? 0) * 10) * (this.dailyRule?.playerHpMultiplier ?? 1);
-    this.players.push(this.createPlayer(1, { x: options.coop ? -1.35 : 0, z: 5.7 }, hp));
-    if (options.coop) this.players.push(this.createPlayer(2, { x: 1.35, z: 5.7 }, hp));
+    // Keep the ridge start visually clear of the Pad movement stick while
+    // remaining safely outside the deep-water strip.
+    const routeSpawnX = options.route === 'ridge-route' ? -5.2 : 0;
+    this.players.push(this.createPlayer(1, { x: routeSpawnX + (options.coop ? -1.05 : 0), z: 5.7 }, hp));
+    if (options.coop) this.players.push(this.createPlayer(2, { x: routeSpawnX + 1.05, z: 5.7 }, hp));
   }
 
   on<K extends keyof SimulationEvents>(event: K, listener: Listener<K>): () => void {
@@ -226,6 +244,7 @@ export class Simulation {
     this.rebuildSpatialIndexes();
     this.updatePlayers(step, controls);
     this.updateCooperation(step);
+    this.updateTacticalNodes(step);
     this.updateEnemies(step);
     this.updateProjectiles(step);
     this.updatePickups(step);
@@ -333,15 +352,42 @@ export class Simulation {
       const offset = (i - (pelletCount - 1) / 2) * weapon.spread;
       const c = Math.cos(offset); const s = Math.sin(offset);
       const dir = { x: player.aim.x * c - player.aim.z * s, z: player.aim.x * s + player.aim.z * c };
+      // Keep gameplay and rendering on the same physical muzzle point. The
+      // projectile now starts beyond the barrel cap instead of inside the hull.
+      const muzzle = {
+        x: player.pos.x + dir.x * PLAYER_MUZZLE_DISTANCE,
+        z: player.pos.z + dir.z * PLAYER_MUZZLE_DISTANCE,
+      };
       const projectile = this.acquireProjectile({
-        team: 'player', pos: { x: player.pos.x + dir.x, z: player.pos.z + dir.z },
-        prev: { ...player.pos }, vel: { x: dir.x * weapon.speed * (ammo?.speed ?? 1), z: dir.z * weapon.speed * (ammo?.speed ?? 1) }, radius: .15,
+        team: 'player', pos: muzzle, prev: { ...muzzle },
+        vel: { x: dir.x * weapon.speed * (ammo?.speed ?? 1), z: dir.z * weapon.speed * (ammo?.speed ?? 1) }, radius: .15,
         damage, life: 1.8, color: ammo?.color ?? weapon.color, pierce: ammo?.pierce ?? (player.weapon === 'rail' ? 3 : 0), owner: player.id,
         ammo: ammoId, bounces: ammo?.bounces ?? 0,
       });
       this.projectiles.push(projectile);
       this.emit('shot', { player, projectile });
     }
+  }
+
+  private updateTacticalNodes(dt: number): void {
+    this.tacticalNodes.forEach((node) => {
+      if (node.captured) return;
+      const occupants = this.players.filter((player) => player.alive && distance(player.pos, node.pos) <= node.radius);
+      if (!occupants.length) {
+        node.progress = Math.max(0, node.progress - dt * .35);
+        return;
+      }
+      node.progress = Math.min(1, node.progress + dt * (.38 + (occupants.length - 1) * .18));
+      if (node.progress < 1) return;
+      node.captured = true;
+      this.score += node.id === 'core' ? 260 : 160;
+      occupants.forEach((player) => { player.shield = Math.max(player.shield, node.id === 'core' ? 5 : 3); });
+      const name = node.id === 'core' ? '中央能量核心' : `据点 ${node.id.toUpperCase()}`;
+      this.emit('message', {
+        title: `${name} 已守护`,
+        body: node.id === 'core' ? '核心脉冲为车组补充护盾，并点亮三条战术路线' : '侧翼据点已点亮，获得护盾与协作积分',
+      });
+    });
   }
 
   private useAbility(player: PlayerEntity, ability: AbilityId, target?: Vec2): void {
@@ -659,6 +705,7 @@ export class Simulation {
     if (this.nextWaveTimer > 0) return;
     if (this.wave > 0) this.clearedWaves = Math.max(this.clearedWaves, this.wave);
     this.wave += 1;
+    this.tacticalNodes.forEach((node) => { node.progress = 0; node.captured = false; });
     const boss = this.wave % 5 === 0;
     this.emit('wave', { wave: this.wave, boss });
     if (boss) {
