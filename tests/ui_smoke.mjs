@@ -77,7 +77,10 @@ async function runView(browser, name, viewport, touch = false) {
       console.log(`[ui-smoke] ${name}: route reopened=${await launch.isEnabled()}`);
       assert(await launch.isEnabled(), `${name}: compatible movement module did not open route`);
     }
-    await launch.click({ force: true, timeout: 3_000 });
+    // The launch handler is an in-page state transition. dispatchEvent avoids
+    // Playwright waiting for a service-worker controller navigation that can be
+    // scheduled concurrently on a cold GitHub runner after the click succeeds.
+    await launch.dispatchEvent('click');
     const combatTimeout = process.env.CI ? 30_000 : 12_000;
     await page.locator('#hud').waitFor({ state: 'visible', timeout: combatTimeout });
     await page.waitForTimeout(700);
