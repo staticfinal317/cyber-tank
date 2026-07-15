@@ -1,5 +1,6 @@
 node_modules/
 dist/
+test-results/*-game.png
 .DS_Store
 *.log
 .idea/

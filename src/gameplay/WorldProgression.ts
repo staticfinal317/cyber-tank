@@ -29,7 +29,9 @@ export function applyWorldRun(
   if (completedMission && !next.restoredLandmarks.includes(completedMission)) next.restoredLandmarks.push(completedMission);
   for (const kind of encountered) if (!next.encyclopedia.includes(kind)) next.encyclopedia.push(kind);
   (Object.values(COMPANIONS) as CompanionDefinition[]).forEach((companion) => { if (next.valleyLevel >= companion.unlockLevel && !next.unlockedCompanions.includes(companion.id)) next.unlockedCompanions.push(companion.id); });
-  next.companionBond[next.activeCompanion] = (next.companionBond[next.activeCompanion] ?? 0) + Math.max(1, Math.round(summary.duration / 30) + (summary.missionComplete ? 3 : 0));
+  const bondGain = Math.max(1, Math.round(summary.duration / 30) + (summary.missionComplete ? 3 : 0));
+  next.companionBond[next.activeCompanion] = (next.companionBond[next.activeCompanion] ?? 0)
+    + Math.round(bondGain * (next.activeCompanion === 'sprout' ? 1.5 : 1));
   const theme = summary.theme as ThemeId; next.themeMastery[theme] = (next.themeMastery[theme] ?? 0) + summary.repaired;
   return next;
 }

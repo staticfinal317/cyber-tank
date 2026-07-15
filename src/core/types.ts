@@ -16,6 +16,7 @@ export type WeaponId = 'pulse' | 'scatter' | 'rail' | 'arc';
 export type ChassisId = 'spark' | 'guardian' | 'comet';
 export type CompanionId = 'little-core' | 'sprout' | 'snowball';
 export type CrewRole = 'navigator' | 'engineer' | 'wingman';
+export type DailyObjective = 'score' | 'waves' | 'boss' | 'repair';
 export type AbilityId = 'shield' | 'repair' | 'dash' | 'storm';
 export type SeasonId = 'spring' | 'summer' | 'autumn' | 'winter';
 export type BiomeId = 'mountain-sea-valley';
@@ -109,6 +110,7 @@ export interface GameOptions {
   theme: ThemeId;
   assist: AssistLevel;
   coop: boolean;
+  crewMode?: boolean;
   crewRoleP2?: CrewRole;
   companion?: CompanionId;
   weapon: WeaponId;
@@ -120,6 +122,7 @@ export interface GameOptions {
   missionId?: ExpeditionMissionId;
   testDrive?: boolean;
   seed?: number;
+  dailyKey?: string;
 }
 
 export interface RunSummary {
@@ -136,6 +139,9 @@ export interface RunSummary {
   season?: SeasonId;
   missionId?: ExpeditionMissionId;
   missionComplete?: boolean;
+  dailyKey?: string;
+  dailyComplete?: boolean;
+  dailyReward?: number;
 }
 
 export interface ReplayFrame {
@@ -173,6 +179,7 @@ export interface SaveData {
   seasonBestScores: Partial<Record<SeasonId, number>>;
   techRanks: Record<string, number>;
   achievements: string[];
+  dailyChallenges: Record<string, { bestScore: number; completedAt?: string; rewardClaimed: boolean }>;
   world: {
     valleyXp: number;
     valleyLevel: number;

@@ -11,7 +11,9 @@ import { LocalSaveRepository } from '../persistence/LocalSaveRepository';
 import { ThreeRenderer } from '../render/ThreeRenderer';
 import { UIController } from '../ui/UIController';
 import { PerformanceGovernor } from '../platform/PerformanceGovernor';
-import { applyWorldRun } from '../gameplay/WorldProgression';
+import { PauseState } from './PauseState';
+import { settleRun } from '../gameplay/RunSettlement';
+import { mergeCrewControls } from '../input/CrewControls';
 
 export class Game {
   private readonly repo = new LocalSaveRepository();
@@ -23,7 +25,7 @@ export class Game {
   private simulation?: Simulation;
   private lastOptions?: GameOptions;
   private lastTime = performance.now();
-  private paused = false;
+  private readonly pauseState = new PauseState();
   private resultHandled = false;
   private workshopActive = false;
   private workshopSeason?: SeasonId;
@@ -40,7 +42,7 @@ export class Game {
       start: (options) => this.start(options),
       restart: () => this.restart(),
       home: () => this.home(),
-      pause: (paused) => { this.paused = paused; },
+      pause: (paused) => this.setUserPause(paused),
       buyTech: (id) => void this.buyTech(id),
       unlockWeapon: (id) => void this.unlockWeapon(id),
       unlockChassis: (id) => void this.unlockChassis(id),
@@ -57,6 +59,7 @@ export class Game {
       selectCompanion: (id) => void this.selectCompanion(id),
     });
     this.input.setGamepadListener((status) => this.ui.updateGamepad(status));
+    this.input.setInterfaceListener((event) => this.ui.handleGamepadInterface(event));
     this.renderer.setContextListener((state) => this.handleContextState(state));
     document.addEventListener('visibilitychange', this.onVisibilityChange);
   }
@@ -78,7 +81,8 @@ export class Game {
     else this.audio.stopAmbience();
     this.lastOptions = options;
     this.resultHandled = false;
-    this.paused = false;
+    this.pauseState.reset();
+    this.input.resetTransientState();
     this.workshopActive = false;
     this.simulationAccumulator = 0;
     if (options.biome === 'mountain-sea-valley') this.renderer.setExpeditionSeason(options.season ?? 'spring');
@@ -96,7 +100,8 @@ export class Game {
 
   private home(): void {
     this.simulation = undefined;
-    this.paused = false;
+    this.pauseState.reset();
+    this.input.resetTransientState();
     this.renderer.clearSimulation();
     this.renderer.stopReplay();
     this.workshopActive = false;
@@ -155,28 +160,43 @@ export class Game {
 
   private applySettings(): void {
     const settings = this.save.settings;
+    const systemRequestsReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    const comfortSettings = { reduceFlashes: settings.reduceFlashes || systemRequestsReducedMotion };
     this.audio.setPreferences(settings.music, settings.sfx, settings.masterVolume);
-    this.input.setPreferences(settings); this.renderer.setAccessibility(settings);
+    this.input.setPreferences(settings); this.renderer.setAccessibility(comfortSettings);
     document.body.classList.toggle('is-left-handed', settings.leftHanded);
     document.body.classList.toggle('is-large-text', settings.largeText);
-    document.body.classList.toggle('reduce-flashes', settings.reduceFlashes);
+    document.body.classList.toggle('reduce-flashes', comfortSettings.reduceFlashes);
     document.body.dataset.colorMode = settings.colorMode;
+  }
+
+  private setUserPause(paused: boolean): void {
+    if (paused) this.pauseState.set('manual', true); else this.pauseState.resumeByUser();
+    if (this.pauseState.paused) {
+      const restoring = this.pauseState.has('webgl');
+      this.ui.setSystemPause(true, restoring ? '画面正在安全恢复' : '星核引擎待机中', restoring ? '画面恢复完成后才能继续，当前进度不会丢失。' : '活动一下手指，准备好后继续。');
+    } else this.ui.setSystemPause(false);
   }
 
   private handleContextState(state: 'lost' | 'restored'): void {
     if (state === 'lost') {
-      this.paused = true; this.audio.stopAmbience(.08);
-      this.ui.setSystemPause(true, '画面正在安全恢复', '请不要关闭页面，星核任务和成长进度都不会丢失。');
+      this.pauseState.set('webgl', true); this.input.resetTransientState(); this.audio.stopAmbience(.08);
+      if (this.simulation && !this.simulation.over) this.ui.setSystemPause(true, '画面正在安全恢复', '请不要关闭页面，星核任务和成长进度都不会丢失。');
     } else {
-      this.lastTime = performance.now(); this.simulationAccumulator = 0; this.paused = false;
-      this.ui.setSystemPause(false); this.ui.toast('画面恢复完成', '任务已从安全暂停点继续');
+      this.lastTime = performance.now(); this.simulationAccumulator = 0; this.pauseState.set('webgl', false);
+      if (this.simulation && !this.simulation.over) {
+        if (this.pauseState.paused) this.ui.setSystemPause(true, '任务仍处于安全暂停', '返回页面后请点击继续，不会因为恢复画面而自动进入战斗。');
+        else this.ui.setSystemPause(false);
+        this.ui.toast('画面恢复完成', this.pauseState.paused ? '仍保持暂停，准备好后再继续' : '任务已从安全暂停点继续');
+      }
     }
   }
 
   private onVisibilityChange = (): void => {
     this.lastTime = performance.now(); this.simulationAccumulator = 0;
     if (document.hidden && this.simulation && !this.simulation.over) {
-      this.paused = true; this.ui.setSystemPause(true, '任务已自动暂停', '回到页面后点击继续，不会因为切换应用受到伤害。');
+      this.pauseState.set('hidden', true); this.input.resetTransientState();
+      this.ui.setSystemPause(true, '任务已自动暂停', '回到页面后点击继续，不会因为切换应用受到伤害。');
     }
   };
 
@@ -217,6 +237,7 @@ export class Game {
         boss ? '区域霸主抵达' : `第 ${wave} 波`,
         boss ? '观察攻击节奏，和伙伴一起行动' : wave % 3 === 0 ? '新的伙伴机类型加入了挑战' : '保持移动，连击会提高得分',
       );
+      if (boss && sim.options.companion === 'snowball') this.ui.toast('雪球发现弱点', '先用扫描标记霸主，再攻击会造成更多伤害');
     });
     sim.on('event', ({ message }) => this.ui.toast('关卡事件', message));
     sim.on('mission', ({ missionId }) => {
@@ -247,37 +268,21 @@ export class Game {
       season: sim.options.season,
       missionId: sim.options.missionId,
       missionComplete: sim.missionComplete,
+      dailyKey: sim.dailyRule?.id,
+      dailyComplete: sim.dailyComplete,
+      dailyReward: sim.dailyRule?.reward,
     };
     const replay: ReplayData = {
       id: crypto.randomUUID(), createdAt: new Date().toISOString(), options: sim.options,
       summary, frames: sim.replayFrames,
     };
-    this.save = await this.repo.addRun(summary, replay);
-    const missionId = sim.options.missionId;
-    if (sim.options.route && !this.save.discoveredRoutes.includes(sim.options.route)) this.save.discoveredRoutes.push(sim.options.route);
-    if (missionId && sim.missionComplete && !this.save.completedMissions.includes(missionId)) {
-      this.save.completedMissions.push(missionId);
-      this.save.starShards += EXPEDITION_MISSIONS[missionId].reward;
-    }
-    this.save.world = applyWorldRun(this.save.world, summary, sim.encounteredEnemies, missionId && sim.missionComplete ? missionId : undefined);
-    if (sim.options.season) {
-      this.save.seasonBestScores[sim.options.season] = Math.max(this.save.seasonBestScores[sim.options.season] ?? 0, summary.score);
-    }
-    const achievementIds = [
-      ...(sim.repaired >= 1 ? ['first-repair'] : []),
-      ...(this.save.totalRepaired >= 50 ? ['helper-50'] : []),
-      ...(sim.wave >= 5 ? ['wave-5'] : []),
-      ...(sim.wave >= 10 ? ['wave-10'] : []),
-      ...(sim.options.coop ? ['coop'] : []),
-    ];
-    const unlocked = achievementIds.filter((id) => !this.save.achievements.includes(id));
-    if (unlocked.length) {
-      this.save.achievements.push(...unlocked);
-      this.save.starShards += unlocked.length * 20;
-      const first = ACHIEVEMENTS.find((achievement) => achievement.id === unlocked[0]);
+    const settled = settleRun(this.save, { summary, replay, route: sim.options.route, encounteredEnemies: sim.encounteredEnemies, coop: sim.options.coop });
+    await this.repo.save(settled.save);
+    this.save = settled.save;
+    if (settled.unlockedAchievements.length) {
+      const first = ACHIEVEMENTS.find((achievement) => achievement.id === settled.unlockedAchievements[0]);
       if (first) this.ui.toast('新成就', `${first.name} · 奖励 20 星屑`);
     }
-    await this.repo.save(this.save);
     this.ui.setSave(this.save);
     this.ui.showResult(summary);
   }
@@ -327,12 +332,13 @@ export class Game {
     const rawDt = Math.max(0, (time - this.lastTime) / 1000);
     const dt = Math.min(.05, rawDt);
     this.lastTime = time;
+    this.input.pollInterface();
     const qualityChange = this.performance.sample(rawDt || 1 / 60);
     if (qualityChange) this.renderer.setQuality(qualityChange);
     this.performanceHudClock -= dt;
     if (this.performanceHudClock <= 0) { this.performanceHudClock = .75; this.ui.updatePerformance(this.performance.level, this.performance.fps); }
     const sim = this.simulation;
-    if (sim && !this.paused && !sim.over) {
+    if (sim && !this.pauseState.paused && !sim.over) {
       this.ambienceClock -= dt;
       if (this.ambienceClock <= 0) { this.ambienceClock = .2; this.audio.updateAmbience(sim.weather.intensity, sim.weather.warning || sim.eventKind === 'lightning'); }
       const p1 = sim.players[0];
@@ -340,7 +346,9 @@ export class Game {
       this.simulationAccumulator = Math.min(.1, this.simulationAccumulator + dt);
       const fixedStep = 1 / 60;
       while (this.simulationAccumulator >= fixedStep) {
-        sim.update(fixedStep, [this.input.frame(1), this.input.frame(2)]);
+        const p1Controls = this.input.frame(1);
+        const p2Controls = this.input.frame(2);
+        sim.update(fixedStep, sim.options.crewMode ? [mergeCrewControls(p1Controls, p2Controls)] : [p1Controls, p2Controls]);
         this.simulationAccumulator -= fixedStep;
       }
       this.ui.update(sim);

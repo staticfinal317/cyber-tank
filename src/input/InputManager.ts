@@ -3,19 +3,25 @@ import type { ControlFrame } from '../gameplay/Simulation';
 
 interface PointerState { x: number; y: number; active: boolean }
 export interface GamepadStatus { slot: 1 | 2; connected: boolean; name: string }
+export type InterfaceCommand = 'up' | 'down' | 'left' | 'right' | 'confirm' | 'back' | 'pause';
+export interface GamepadInterfaceEvent { slot: 1 | 2; command: InterfaceCommand }
 
 const ZERO: Vec2 = { x: 0, z: 0 };
 
 export class InputManager {
   private keys = new Set<string>();
   private pressedAbilities = new Set<AbilityId>();
+  private pressedAbilitiesP2 = new Set<AbilityId>();
   private pressedAbilityTargets = new Map<AbilityId, Vec2>();
   private ammoSwitchPressed = false;
+  private p2AmmoSwitchPressed = false;
   private pingPressed = [false, false];
   private padSwitchHeld = [false, false];
   private padPingHeld = [false, false];
   private padSlots: Array<number | undefined> = [undefined, undefined];
   private gamepadListener?: (status: GamepadStatus) => void;
+  private interfaceListener?: (event: GamepadInterfaceEvent) => void;
+  private interfaceHeld: Array<Set<InterfaceCommand>> = [new Set(), new Set()];
   private mouse: PointerState = { x: 0, y: 0, active: false };
   private touchMove: Vec2 = { ...ZERO };
   private touchAim: Vec2 = { x: 0, z: -1 };
@@ -25,6 +31,7 @@ export class InputManager {
   private vibrationEnabled = true;
   private aimSensitivity = 1;
   private gamepadLayout: 'standard' | 'southpaw' = 'standard';
+  private readonly pointerResetters = new Set<() => void>();
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', this.onKeyDown, { passive: false });
@@ -35,6 +42,8 @@ export class InputManager {
     canvas.addEventListener('contextmenu', (event) => event.preventDefault());
     window.addEventListener('gamepadconnected', this.onGamepadConnected);
     window.addEventListener('gamepaddisconnected', this.onGamepadDisconnected);
+    window.addEventListener('blur', this.resetTransientState);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.resetTransientState(); });
     this.bindTouchControls();
     Array.from(navigator.getGamepads?.() ?? []).forEach((pad) => { if (pad) this.assignGamepad(pad); });
   }
@@ -44,11 +53,39 @@ export class InputManager {
   setPreferences(settings: { vibration: boolean; aimSensitivity: number; gamepadLayout: 'standard' | 'southpaw' }): void {
     this.vibrationEnabled = settings.vibration; this.aimSensitivity = settings.aimSensitivity; this.gamepadLayout = settings.gamepadLayout;
   }
+
+  resetTransientState = (): void => {
+    this.keys.clear(); this.pressedAbilities.clear(); this.pressedAbilitiesP2.clear(); this.pressedAbilityTargets.clear();
+    this.ammoSwitchPressed = false; this.p2AmmoSwitchPressed = false; this.pingPressed = [false, false];
+    this.padSwitchHeld = [false, false]; this.padPingHeld = [false, false];
+    this.interfaceHeld = [new Set(), new Set()];
+    this.mouse.active = false; this.touchMove = { ...ZERO }; this.touchAim = { x: 0, z: -1 }; this.touchFiring = false;
+    this.pointerResetters.forEach((reset) => reset());
+  };
   setGamepadListener(listener: (status: GamepadStatus) => void): void {
     this.gamepadListener = listener;
     this.padSlots.forEach((index, slot) => {
       const pad = index === undefined ? undefined : navigator.getGamepads?.()[index];
       if (pad) listener({ slot: (slot + 1) as 1 | 2, connected: true, name: this.shortPadName(pad.id) });
+    });
+  }
+  setInterfaceListener(listener: (event: GamepadInterfaceEvent) => void): void { this.interfaceListener = listener; }
+
+  pollInterface(): void {
+    this.padSlots.forEach((gamepadIndex, index) => {
+      const pad = gamepadIndex === undefined ? undefined : navigator.getGamepads?.()[gamepadIndex];
+      if (!pad) return;
+      const active = new Set<InterfaceCommand>();
+      const x = pad.axes[0] ?? 0; const y = pad.axes[1] ?? 0;
+      if (pad.buttons[12]?.pressed || y < -.62) active.add('up');
+      if (pad.buttons[13]?.pressed || y > .62) active.add('down');
+      if (pad.buttons[14]?.pressed || x < -.62) active.add('left');
+      if (pad.buttons[15]?.pressed || x > .62) active.add('right');
+      if (pad.buttons[0]?.pressed) active.add('confirm');
+      if (pad.buttons[1]?.pressed) active.add('back');
+      if (pad.buttons[9]?.pressed) active.add('pause');
+      active.forEach((command) => { if (!this.interfaceHeld[index]!.has(command)) this.interfaceListener?.({ slot: (index + 1) as 1 | 2, command }); });
+      this.interfaceHeld[index] = active;
     });
   }
 
@@ -64,19 +101,27 @@ export class InputManager {
   frame(slot: 1 | 2): ControlFrame {
     const gamepad = this.readGamepad(slot - 1);
     if (slot === 2) {
+      const keyboardMove = this.keyboardVector('KeyJ', 'KeyL', 'KeyI', 'KeyK');
+      const keyboardAim = keyboardMove.x || keyboardMove.z ? keyboardMove : { x: 0, z: -1 };
+      const padAimActive = Boolean(gamepad.aim.x || gamepad.aim.z);
+      const abilities = new Set<AbilityId>([...this.pressedAbilitiesP2, ...gamepad.abilities]);
       const abilityTargets = new Map<AbilityId, Vec2>();
-      gamepad.abilities.forEach((ability) => {
-        if ((ability === 'dash' || ability === 'storm') && (gamepad.aim.x || gamepad.aim.z)) abilityTargets.set(ability, gamepad.aim);
+      abilities.forEach((ability) => {
+        const target = gamepad.aim.x || gamepad.aim.z ? gamepad.aim : keyboardAim;
+        if ((ability === 'dash' || ability === 'storm') && (target.x || target.z)) abilityTargets.set(ability, target);
       });
-      return {
-        move: gamepad.move.x || gamepad.move.z ? gamepad.move : this.keyboardVector('KeyJ', 'KeyL', 'KeyI', 'KeyK'),
-        aim: gamepad.aim.x || gamepad.aim.z ? gamepad.aim : { x: 0, z: -1 },
+      const frame: ControlFrame = {
+        move: gamepad.move.x || gamepad.move.z ? gamepad.move : keyboardMove,
+        aim: gamepad.aim.x || gamepad.aim.z ? gamepad.aim : keyboardAim,
         firing: gamepad.firing || this.keys.has('Enter'),
-        abilities: gamepad.abilities,
+        abilities,
         abilityTargets,
-        switchAmmo: gamepad.switchAmmo,
+        switchAmmo: gamepad.switchAmmo || this.p2AmmoSwitchPressed,
         ping: this.consumePing(1, gamepad.ping),
+        aimActive: padAimActive || Boolean(keyboardMove.x || keyboardMove.z),
       };
+      this.pressedAbilitiesP2.clear(); this.p2AmmoSwitchPressed = false;
+      return frame;
     }
     const keyboard = this.keyboardVector('KeyA', 'KeyD', 'KeyW', 'KeyS', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown');
     const move = this.touchMove.x || this.touchMove.z ? this.touchMove
@@ -94,7 +139,11 @@ export class InputManager {
     this.pressedAbilities.clear();
     this.pressedAbilityTargets.clear();
     this.ammoSwitchPressed = false;
-    return { move, aim, firing: this.touchFiring || this.mouse.active || this.keys.has('Space') || gamepad.firing, abilities, abilityTargets, switchAmmo, ping: this.consumePing(0, gamepad.ping) };
+    return {
+      move, aim, firing: this.touchFiring || this.mouse.active || this.keys.has('Space') || gamepad.firing,
+      abilities, abilityTargets, switchAmmo, ping: this.consumePing(0, gamepad.ping),
+      aimActive: this.touchFiring || this.mouse.active || Boolean(gamepad.aim.x || gamepad.aim.z),
+    };
   }
 
   private consumePing(index: 0 | 1, gamepadPing: boolean): boolean { const value = this.pingPressed[index] || gamepadPing; this.pingPressed[index] = false; return value; }
@@ -168,6 +217,8 @@ export class InputManager {
     };
     zone?.addEventListener('pointerup', endStick);
     zone?.addEventListener('pointercancel', endStick);
+    zone?.addEventListener('lostpointercapture', endStick);
+    this.pointerResetters.add(() => endStick({ pointerId: stickPointer } as PointerEvent));
 
     const fire = document.querySelector<HTMLElement>('[data-control="fire"]');
     let firePointer = -1;
@@ -176,11 +227,18 @@ export class InputManager {
       const box = fire.getBoundingClientRect();
       const dx = event.clientX - (box.left + box.width / 2);
       const dy = event.clientY - (box.top + box.height / 2);
-      if (Math.hypot(dx, dy) > 12) this.touchAim = { x: dx, z: dy };
+      const length = Math.hypot(dx, dy);
+      if (length > 12) {
+        const target = { x: dx / length, z: dy / length };
+        const response = Math.max(.18, Math.min(.8, .42 * this.aimSensitivity));
+        const x = this.touchAim.x + (target.x - this.touchAim.x) * response;
+        const z = this.touchAim.z + (target.z - this.touchAim.z) * response;
+        const magnitude = Math.hypot(x, z) || 1; this.touchAim = { x: x / magnitude, z: z / magnitude };
+      }
       fire.style.setProperty('--aim-x', `${Math.max(-22, Math.min(22, dx))}px`);
       fire.style.setProperty('--aim-y', `${Math.max(-22, Math.min(22, dy))}px`);
     };
-    fire?.addEventListener('pointerdown', (event) => { firePointer = event.pointerId; this.touchFiring = true; fire.setPointerCapture(event.pointerId); fire.classList.add('is-aiming'); moveFire(event); this.haptic(18); });
+    fire?.addEventListener('pointerdown', (event) => { if (firePointer >= 0) return; firePointer = event.pointerId; this.touchFiring = true; fire.setPointerCapture(event.pointerId); fire.classList.add('is-aiming'); moveFire(event); this.haptic(18); });
     fire?.addEventListener('pointermove', moveFire);
     const endFire = (event: PointerEvent) => {
       if (event.pointerId !== firePointer) return;
@@ -190,6 +248,8 @@ export class InputManager {
     };
     fire?.addEventListener('pointerup', endFire);
     fire?.addEventListener('pointercancel', endFire);
+    fire?.addEventListener('lostpointercapture', endFire);
+    this.pointerResetters.add(() => endFire({ pointerId: firePointer } as PointerEvent));
 
     const touchControls = document.querySelector<HTMLElement>('#touch-controls');
     const cancelZone = document.querySelector<HTMLElement>('#ability-cancel-zone');
@@ -216,7 +276,7 @@ export class InputManager {
       };
       button.addEventListener('pointerdown', (event) => {
         event.preventDefault();
-        if (button.classList.contains('is-cooling')) return;
+        if (button.classList.contains('is-cooling') || abilityPointer >= 0) return;
         abilityPointer = event.pointerId;
         const box = button.getBoundingClientRect();
         origin = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
@@ -246,9 +306,11 @@ export class InputManager {
       };
       button.addEventListener('pointerup', (event) => finishAbility(event));
       button.addEventListener('pointercancel', (event) => finishAbility(event, true));
+      button.addEventListener('lostpointercapture', (event) => finishAbility(event, true));
       // Some mobile browsers transfer capture during OS gestures; window fallbacks prevent a stuck targeting state.
       window.addEventListener('pointerup', (event) => finishAbility(event));
       window.addEventListener('pointercancel', (event) => finishAbility(event, true));
+      this.pointerResetters.add(() => finishAbility({ pointerId: abilityPointer, clientX: origin.x, clientY: origin.y } as PointerEvent, true));
     });
     document.querySelector<HTMLElement>('[data-control="ammo-switch"]')?.addEventListener('pointerdown', (event) => { event.preventDefault(); this.ammoSwitchPressed = true; this.haptic(18); });
     document.querySelector<HTMLElement>('[data-control="marker"]')?.addEventListener('pointerdown', (event) => { event.preventDefault(); this.pingPressed[0] = true; this.haptic(20); });
@@ -273,11 +335,15 @@ export class InputManager {
   };
 
   private onKeyDown = (event: KeyboardEvent): void => {
+    if (isEditableTarget(event.target)) return;
     this.keys.add(event.code);
     const ability: Partial<Record<string, AbilityId>> = { Digit1: 'shield', Digit2: 'repair', Digit3: 'dash', Digit4: 'storm' };
+    const p2Ability: Partial<Record<string, AbilityId>> = { Digit7: 'shield', Digit8: 'repair', Digit9: 'dash', Digit0: 'storm' };
     const selected = ability[event.code];
     if (selected) this.pressedAbilities.add(selected);
+    const selectedP2 = p2Ability[event.code]; if (selectedP2) this.pressedAbilitiesP2.add(selectedP2);
     if (event.code === 'KeyQ') this.ammoSwitchPressed = true;
+    if (event.code === 'KeyO') this.p2AmmoSwitchPressed = true;
     if (event.code === 'KeyC') this.pingPressed[0] = true;
     if (event.code === 'KeyU') this.pingPressed[1] = true;
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) event.preventDefault();
@@ -293,4 +359,9 @@ export class InputManager {
     this.mouse.x = event.clientX; this.mouse.y = event.clientY;
   };
   private onPointerUp = (event: PointerEvent): void => { if (event.pointerType !== 'touch') this.mouse.active = false; };
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  const element = target instanceof HTMLElement ? target : undefined;
+  return Boolean(element?.closest('input, select, textarea, button, [contenteditable="true"]'));
 }

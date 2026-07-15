@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
     <meta name="theme-color" content="#07101b" />
     <meta name="description" content="面向 6–12 岁儿童与家庭的 3D 同屏协作坦克游戏。" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <title>赛博坦克 · 星核远征</title>
@@ -14,7 +15,8 @@
       <section class="game-stage" aria-label="赛博坦克游戏画面">
         <canvas id="game-canvas"></canvas>
         <div class="screen-fx" aria-hidden="true"></div>
-        <div id="damage-layer" class="damage-layer" aria-live="polite"></div>
+        <div id="damage-layer" class="damage-layer" aria-hidden="true"></div>
+        <div id="combat-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 
         <header id="hud" class="hud is-hidden">
           <div class="pilot-status hud-glass">
@@ -64,9 +66,9 @@
           </div>
         </div>
 
-        <section id="workshop" class="overlay workshop-overlay is-hidden" aria-label="远征工坊">
+        <section id="workshop" class="overlay workshop-overlay is-hidden" aria-modal="true" role="dialog" aria-labelledby="workshop-title">
           <header class="workshop-header">
-            <div class="workshop-title"><span>CYBER TANK / EXPEDITION BAY</span><h1>远征工坊</h1></div>
+            <div class="workshop-title"><span>CYBER TANK / EXPEDITION BAY</span><h1 id="workshop-title">远征工坊</h1></div>
             <div class="workshop-presets-wrap"><span>装配方案</span><div id="workshop-presets" class="workshop-presets"></div></div>
             <button id="workshop-close" class="workshop-close" aria-label="返回基地"><i class="ph ph-x"></i><span>返回</span></button>
           </header>
@@ -137,15 +139,15 @@
             <section class="mission-console">
               <div class="console-heading"><div><span class="eyebrow">选择任务</span><h2>准备出发</h2></div><span id="control-hint" class="control-hint">键鼠 / 手柄</span></div>
               <div class="mode-selector" role="radiogroup" aria-label="游戏模式">
-                <button class="mode-option is-selected" data-mode="adventure"><b>远征</b><small>8 分钟章节体验</small></button>
-                <button class="mode-option" data-mode="endless"><b>无尽</b><small>挑战最高波次</small></button>
-                <button class="mode-option" data-mode="last-core"><b>最后星核</b><small>安全区逐步收缩</small></button>
-                <button class="mode-option" data-mode="daily"><b>每日</b><small>全员相同种子</small></button>
+                <button class="mode-option is-selected" data-mode="adventure" role="radio" aria-checked="true"><b>远征</b><small>8 分钟章节体验</small></button>
+                <button class="mode-option" data-mode="endless" role="radio" aria-checked="false"><b>无尽</b><small>挑战最高波次</small></button>
+                <button class="mode-option" data-mode="last-core" role="radio" aria-checked="false"><b>最后星核</b><small>安全区逐步收缩</small></button>
+                <button class="mode-option" data-mode="daily" role="radio" aria-checked="false"><b>每日</b><small>全员相同种子</small></button>
               </div>
 
               <div class="choice-row">
                 <label><span>辅助驾驶</span><select id="assist-select"><option value="easy">轻松 · 自动瞄准</option><option value="standard" selected>标准 · 瞄准辅助</option><option value="expert">高手 · 完全手动</option></select></label>
-                <label><span>出发队伍</span><select id="team-select"><option value="solo">单人</option><option value="coop">双人同屏</option></select></label>
+                <label><span>出发队伍</span><select id="team-select"><option value="solo">单人</option><option value="crew">Pad 共享车组</option><option value="coop">双坦克同屏</option></select></label>
                 <label><span>P2 家庭分工</span><select id="crew-role-select"><option value="navigator">领航员 · 标记路线</option><option value="engineer">工程师 · 强化修复</option><option value="wingman">僚机 · 火力支援</option></select></label>
                 <label><span>画质模式</span><select id="quality-select"><option value="auto">自动调节</option><option value="high">高画质</option><option value="balanced">均衡</option><option value="battery">省电</option></select></label>
               </div>
@@ -172,18 +174,18 @@
           </div>
         </section>
 
-        <section id="side-panel" class="overlay panel-overlay is-hidden" aria-modal="true" role="dialog">
+        <section id="side-panel" class="overlay panel-overlay is-hidden" aria-modal="true" role="dialog" aria-label="功能面板">
           <div class="panel-shell">
             <button id="panel-close" class="panel-close" aria-label="关闭">×</button>
             <div id="panel-content"></div>
           </div>
         </section>
 
-        <section id="pause-overlay" class="overlay simple-overlay is-hidden">
+        <section id="pause-overlay" class="overlay simple-overlay is-hidden" aria-modal="true" role="dialog" aria-labelledby="pause-title">
           <div class="result-shell compact"><span id="pause-kicker" class="eyebrow">任务暂停</span><h2 id="pause-title">星核引擎待机中</h2><p id="pause-message">活动一下手指，准备好后继续。</p><button id="resume-button" class="primary-button"><span>继续任务</span></button><button id="quit-button" class="text-button">返回基地</button></div>
         </section>
 
-        <section id="game-over" class="overlay simple-overlay is-hidden" aria-modal="true" role="dialog">
+        <section id="game-over" class="overlay simple-overlay is-hidden" aria-modal="true" role="dialog" aria-labelledby="result-title">
           <div class="result-shell">
             <span id="result-kicker" class="season-tag">任务完成</span>
             <h2 id="result-title">你守护了整片街区</h2>

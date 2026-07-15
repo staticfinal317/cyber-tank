@@ -5,7 +5,10 @@ import { Simulation, type ControlFrame } from '../src/gameplay/Simulation';
 import type { GameOptions, RunSummary } from '../src/core/types';
 
 const idle: ControlFrame = { move: { x: 0, z: 0 }, aim: { x: 0, z: -1 }, firing: false, abilities: new Set(), switchAmmo: false };
-const options: GameOptions = { mode: 'endless', theme: 'neon-city', assist: 'standard', coop: true, crewRoleP2: 'navigator', weapon: 'pulse', chassis: 'spark' };
+const options: GameOptions = {
+  mode: 'endless', theme: 'neon-city', assist: 'standard', coop: true,
+  crewRoleP2: 'navigator', weapon: 'pulse', chassis: 'spark', seed: 20260715,
+};
 
 describe('offline family world and cooperation', () => {
   it('turns every run into persistent valley, discovery and companion progress', () => {
@@ -28,7 +31,9 @@ describe('offline family world and cooperation', () => {
   });
 
   it('rewards two nearby family players for charging a cooperative mechanism', () => {
-    const sim = new Simulation(options);
+    // Test-drive isolates the cooperative mechanism from random wave collisions.
+    const sim = new Simulation({ ...options, testDrive: true });
+    sim.teamMarker = { pos: { x: 0, z: 5.7 }, life: 20, owner: sim.players[1]!.id };
     for (let i = 0; i < 260; i += 1) sim.update(.033, [idle, idle]);
     expect(sim.score).toBeGreaterThanOrEqual(300);
   });

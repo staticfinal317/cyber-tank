@@ -4,12 +4,13 @@ import { THEME_ORDER, THEMES } from '../content/themes';
 import { EXPEDITION_MISSIONS, SEASONS, SURFACES, WEATHER } from '../content/expedition';
 import type { ChassisId, ExpeditionMissionId, GameOptions, LoadoutPreset, ReplayData, RouteId, RunSummary, SaveData, SeasonId, TankLoadout, ThemeId, WeaponId } from '../core/types';
 import { seedFromDate } from '../core/RNG';
+import { dailyKey, dailyRuleForSeed } from '../gameplay/DailyChallenge';
 import type { Simulation } from '../gameplay/Simulation';
 import { WORLD_EVENTS } from '../gameplay/WorldEvents';
 import { ENEMIES } from '../content/enemies';
 import { COMPANIONS, VALLEY_LEVEL_XP } from '../gameplay/WorldProgression';
 import { WorkshopController } from '../workshop/WorkshopController';
-import type { GamepadStatus } from '../input/InputManager';
+import type { GamepadInterfaceEvent, GamepadStatus, InterfaceCommand } from '../input/InputManager';
 import type { QualitySetting, RenderQuality } from '../platform/PerformanceGovernor';
 
 type PanelName = 'tech' | 'armory' | 'leaderboard' | 'replays' | 'settings' | 'home';
@@ -42,7 +43,9 @@ function byId<T extends HTMLElement>(id: string): T {
 }
 
 const CHASSIS_NAMES = { spark: '星火号', guardian: '守护者', comet: '彗星号' } as const;
-const DAILY_NAMES = ['极光快递', '水晶回声', '云端守护', '峡谷寻宝', '霓虹接力'];
+export function canUseCoopOnDevice(touch: boolean, connectedSlots: readonly number[]): boolean {
+  return !touch || (connectedSlots.includes(1) && connectedSlots.includes(2));
+}
 
 export class UIController {
   private save!: SaveData;
@@ -50,6 +53,9 @@ export class UIController {
   private panel?: PanelName;
   private paused = false;
   private readonly workshop: WorkshopController;
+  private readonly connectedGamepads = new Set<number>();
+  private focusReturn?: HTMLElement;
+  private announcedHpBucket = 3;
 
   constructor(private readonly actions: UIActions) {
     this.renderThemes();
@@ -63,6 +69,7 @@ export class UIController {
     });
     this.bind();
     this.updateInputHint();
+    this.refreshCoopAvailability();
   }
 
   setSave(save: SaveData): void {
@@ -74,6 +81,7 @@ export class UIController {
     byId('weapon-label').textContent = WEAPONS[this.options.weapon].name;
     byId('chassis-label').textContent = CHASSIS_NAMES[this.options.chassis];
     byId<HTMLSelectElement>('quality-select').value = save.settings.quality;
+    this.updateDailyBrief();
     if (this.panel) this.renderPanel(this.panel);
   }
 
@@ -86,11 +94,16 @@ export class UIController {
     byId('hud').classList.remove('is-hidden');
     byId('pause-button').classList.remove('is-hidden');
     if (document.body.classList.contains('force-touch') || matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0) byId('touch-controls').classList.remove('is-hidden');
-    byId('p2-status').classList.toggle('is-hidden', !this.options.coop);
+    byId('p2-status').classList.toggle('is-hidden', !this.options.coop && !this.options.crewMode);
+    if (this.options.crewMode) {
+      byId('p2-hp-bar').style.width = '100%';
+      byId('p2-hp-text').textContent = '共享炮塔 · 扫描 / 修复';
+    }
     const mission = options?.missionId ? EXPEDITION_MISSIONS[options.missionId] : undefined;
     byId('mission-label').textContent = options?.testDrive ? `20 秒${SEASONS[options.season ?? 'spring'].name}试驾` : mission?.name ?? '守护星核基地';
     byId('event-label').textContent = options?.testDrive ? '测试转向、制动和抓地' : mission?.description ?? `${THEMES[this.options.theme].mechanic}运行中`;
     this.paused = false;
+    this.announcedHpBucket = 3;
   }
 
   showHome(): void {
@@ -104,6 +117,7 @@ export class UIController {
     byId('pause-button').classList.add('is-hidden');
     byId('touch-controls').classList.add('is-hidden');
     byId('replay-exit').classList.add('is-hidden');
+    window.setTimeout(() => byId('start-button').focus(), 0);
   }
 
   showReplay(): void {
@@ -129,17 +143,27 @@ export class UIController {
       const ratio = Math.max(0, p1.hp / p1.maxHp);
       byId('hp-bar').style.width = `${ratio * 100}%`;
       byId('hp-text').textContent = p1.alive ? `${Math.ceil(p1.hp)} / ${p1.maxHp}` : '等待重建';
+      const bucket = !p1.alive ? 0 : ratio <= .25 ? 1 : ratio <= .5 ? 2 : 3;
+      if (bucket < this.announcedHpBucket) {
+        byId('combat-announcer').textContent = bucket === 0 ? '机体需要重建' : bucket === 1 ? '警告：机体能量低于百分之二十五' : '提示：机体能量低于百分之五十';
+      }
+      this.announcedHpBucket = bucket;
     }
     if (p2) {
       byId('p2-hp-bar').style.width = `${Math.max(0, p2.hp / p2.maxHp) * 100}%`;
       byId('p2-hp-text').textContent = p2.alive ? `${Math.ceil(p2.hp)} / ${p2.maxHp}` : '等待重建';
     }
-    byId('wave-label').textContent = sim.options.testDrive ? `试驾 ${Math.max(0, Math.ceil(20 - sim.elapsed))} 秒` : this.options.mode === 'last-core' ? `安全区 ${sim.safeRadius.toFixed(1)}m` : `第 ${Math.max(1, sim.wave)} 波`;
+    byId('wave-label').textContent = sim.options.testDrive ? `试驾 ${Math.max(0, Math.ceil(20 - sim.elapsed))} 秒`
+      : sim.dailyRule ? `每日 ${Math.max(0, Math.ceil(sim.dailyRule.timeLimit - sim.elapsed))} 秒`
+        : this.options.mode === 'last-core' ? `安全区 ${sim.safeRadius.toFixed(1)}m` : `第 ${Math.max(1, sim.wave)} 波`;
     byId('score-label').textContent = Math.round(sim.score).toString().padStart(6, '0');
     byId('enemy-label').textContent = `伙伴机 ${sim.enemies.length}`;
     byId('combo-label').textContent = `连击 x${sim.combo}`;
     byId('combo-label').classList.toggle('is-hot', sim.combo >= 3);
-    if (sim.options.biome && sim.options.missionId) {
+    if (sim.dailyRule) {
+      byId('mission-label').textContent = `${sim.dailyRule.name} · ${Math.floor(sim.dailyProgress)} / ${sim.dailyRule.target}`;
+      byId('event-label').textContent = sim.dailyComplete ? `挑战完成 · 奖励 ${sim.dailyRule.reward} 星屑` : sim.dailyRule.detail;
+    } else if (sim.options.biome && sim.options.missionId) {
       const progress = `${sim.missionProgressValue} / ${sim.missionTarget}`;
       byId('mission-label').textContent = `${EXPEDITION_MISSIONS[sim.options.missionId].name} · ${sim.missionStageLabel} ${progress}`;
       byId('event-label').textContent = `${SURFACES[sim.players[0]?.surface ?? 'road'].name} · ${WEATHER[sim.weather.id].name}${sim.weather.warning ? '（强天气预警）' : ''}`;
@@ -176,11 +200,14 @@ export class UIController {
     byId('result-wave').textContent = summary.wave.toString();
     byId('result-repaired').textContent = summary.repaired.toString();
     byId('result-stars').textContent = `+${summary.stars}`;
+    window.setTimeout(() => byId('restart-button').focus(), 0);
   }
 
   toast(title: string, body: string): void {
     const toast = document.createElement('div'); toast.className = 'toast';
-    toast.innerHTML = `<i></i><div><strong>${title}</strong><span>${body}</span></div>`;
+    const accent = document.createElement('i'); const content = document.createElement('div');
+    const heading = document.createElement('strong'); const message = document.createElement('span');
+    heading.textContent = title; message.textContent = body; content.append(heading, message); toast.append(accent, content);
     byId('toast-stack').append(toast);
     requestAnimationFrame(() => toast.classList.add('is-visible'));
     window.setTimeout(() => { toast.classList.remove('is-visible'); window.setTimeout(() => toast.remove(), 300); }, 2600);
@@ -192,14 +219,39 @@ export class UIController {
   }
 
   updateGamepad(status: GamepadStatus): void {
+    if (status.connected) this.connectedGamepads.add(status.slot); else this.connectedGamepads.delete(status.slot);
+    this.refreshCoopAvailability();
     byId('control-status').textContent = status.connected ? `P${status.slot} 手柄 · ${status.name}` : `P${status.slot} 手柄已断开`;
     this.toast(status.connected ? `P${status.slot} 手柄已连接` : `P${status.slot} 手柄断开`, status.connected ? `${status.name} 已完成玩家归属` : '可以继续使用触控或键盘，重新连接后会自动归队');
+  }
+
+  handleGamepadInterface(event: GamepadInterfaceEvent): void {
+    if (event.command === 'pause') {
+      if (!byId('hud').classList.contains('is-hidden') || this.paused) this.togglePause(!this.paused);
+      return;
+    }
+    if (event.command === 'back') { this.handleBackAction(); return; }
+    const surface = this.activeInterfaceSurface(); if (!surface) return;
+    const focusables = this.focusables(surface); if (!focusables.length) return;
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    let index = active ? focusables.indexOf(active) : -1;
+    if (event.command === 'confirm') {
+      const target = index >= 0 ? focusables[index]! : focusables[0]!;
+      target.focus();
+      if (target instanceof HTMLButtonElement || target instanceof HTMLInputElement) target.click();
+      return;
+    }
+    if (index >= 0 && active instanceof HTMLSelectElement) { this.stepSelect(active, event.command); return; }
+    const delta = event.command === 'up' || event.command === 'left' ? -1 : 1;
+    index = index < 0 ? 0 : (index + delta + focusables.length) % focusables.length;
+    focusables[index]!.focus();
   }
 
   setSystemPause(paused: boolean, title = '星核引擎待机中', message = '活动一下手指，准备好后继续。'): void {
     byId('pause-kicker').textContent = paused ? '安全暂停' : '任务暂停';
     byId('pause-title').textContent = title; byId('pause-message').textContent = message;
     this.paused = paused; byId('pause-overlay').classList.toggle('is-hidden', !paused);
+    if (paused) window.setTimeout(() => byId('resume-button').focus(), 0);
   }
 
   floatText(x: number, y: number, text: string, critical = false): void {
@@ -211,22 +263,36 @@ export class UIController {
   private bind(): void {
     document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((button) => button.addEventListener('click', () => {
       document.querySelectorAll('[data-mode]').forEach((node) => node.classList.remove('is-selected'));
+      document.querySelectorAll('[data-mode]').forEach((node) => node.setAttribute('aria-checked', 'false'));
+      button.setAttribute('aria-checked', 'true');
       button.classList.add('is-selected'); this.options.mode = button.dataset.mode as GameOptions['mode'];
     }));
     byId<HTMLSelectElement>('assist-select').addEventListener('change', (event) => { this.options.assist = (event.target as HTMLSelectElement).value as GameOptions['assist']; });
-    byId<HTMLSelectElement>('team-select').addEventListener('change', (event) => { this.options.coop = (event.target as HTMLSelectElement).value === 'coop'; });
+    byId<HTMLSelectElement>('team-select').addEventListener('change', (event) => {
+      const select = event.target as HTMLSelectElement;
+      if (select.value === 'coop' && !canUseCoopOnDevice(this.isTouchDevice(), [...this.connectedGamepads])) {
+        select.value = 'solo'; this.options.coop = false;
+        this.toast('需要两只蓝牙手柄', 'Pad 上 P1 与 P2 都需要完整摇杆和技能控制；连接完成后双人模式会自动开放。');
+        return;
+      }
+      this.options.coop = select.value === 'coop';
+      this.options.crewMode = select.value === 'crew';
+    });
     byId<HTMLSelectElement>('crew-role-select').addEventListener('change', (event) => { this.options.crewRoleP2 = (event.target as HTMLSelectElement).value as GameOptions['crewRoleP2']; });
     byId<HTMLSelectElement>('quality-select').addEventListener('change', (event) => this.actions.setQuality((event.target as HTMLSelectElement).value as QualitySetting));
     byId('start-button').addEventListener('click', () => this.openWorkshop());
     document.querySelectorAll<HTMLButtonElement>('[data-panel]').forEach((button) => button.addEventListener('click', () => this.openPanel(button.dataset.panel as PanelName)));
-    byId('panel-close').addEventListener('click', () => byId('side-panel').classList.add('is-hidden'));
+    byId('panel-close').addEventListener('click', () => this.closePanel());
     byId('restart-button').addEventListener('click', this.actions.restart);
     byId('home-button').addEventListener('click', this.actions.home);
     byId('pause-button').addEventListener('click', () => this.togglePause(true));
     byId('resume-button').addEventListener('click', () => this.togglePause(false));
     byId('quit-button').addEventListener('click', () => { this.togglePause(false); this.actions.home(); });
     byId('replay-exit').addEventListener('click', this.actions.home);
-    window.addEventListener('keydown', (event) => { if (event.code === 'Escape' && byId('main-menu').classList.contains('is-hidden')) this.togglePause(!this.paused); });
+    window.addEventListener('keydown', (event) => {
+      if (event.code === 'Escape' && byId('main-menu').classList.contains('is-hidden')) this.handleBackAction();
+      if (event.code === 'Tab') this.trapModalFocus(event);
+    });
   }
 
   private renderThemes(): void {
@@ -234,23 +300,65 @@ export class UIController {
     THEME_ORDER.forEach((id, index) => {
       const theme = THEMES[id];
       const button = document.createElement('button'); button.className = `theme-option${index === 0 ? ' is-selected' : ''}`; button.dataset.theme = id;
+      button.setAttribute('role', 'radio'); button.setAttribute('aria-checked', index === 0 ? 'true' : 'false');
       button.style.setProperty('--theme-color', `#${theme.primary.toString(16).padStart(6, '0')}`);
       button.style.setProperty('--theme-ground', `#${theme.ground.toString(16).padStart(6, '0')}`);
       button.innerHTML = `<i><b></b><b></b><b></b></i><span>${theme.name}</span><small>${theme.subtitle}</small>`;
       button.addEventListener('click', () => {
         root.querySelectorAll('.theme-option').forEach((node) => node.classList.remove('is-selected'));
+        root.querySelectorAll('.theme-option').forEach((node) => node.setAttribute('aria-checked', 'false'));
+        button.setAttribute('aria-checked', 'true');
         button.classList.add('is-selected'); this.options.theme = id;
         byId('theme-mechanic').textContent = `场景机制 · ${theme.mechanic}`;
         this.actions.themePreview(id);
       });
       root.append(button);
     });
-    const today = seedFromDate(); const daily = DAILY_NAMES[today % DAILY_NAMES.length] ?? DAILY_NAMES[0]!;
-    byId('daily-title').textContent = daily;
+    this.updateDailyBrief();
   }
 
   private openPanel(panel: PanelName): void {
+    this.focusReturn = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     this.panel = panel; this.renderPanel(panel); byId('side-panel').classList.remove('is-hidden');
+    window.setTimeout(() => byId('panel-close').focus(), 0);
+  }
+
+  private closePanel(): void {
+    byId('side-panel').classList.add('is-hidden'); this.focusReturn?.focus(); this.focusReturn = undefined;
+  }
+
+  private handleBackAction(): void {
+    if (!byId('side-panel').classList.contains('is-hidden')) { this.closePanel(); return; }
+    if (!byId('workshop').classList.contains('is-hidden')) { this.closeWorkshop(); return; }
+    if (!byId('game-over').classList.contains('is-hidden')) { this.actions.home(); return; }
+    if (!byId('hud').classList.contains('is-hidden') || this.paused) this.togglePause(!this.paused);
+  }
+
+  private activeInterfaceSurface(): HTMLElement | undefined {
+    return ['side-panel', 'pause-overlay', 'game-over', 'workshop', 'main-menu']
+      .map((id) => byId(id)).find((node) => !node.classList.contains('is-hidden'));
+  }
+
+  private focusables(root: HTMLElement): HTMLElement[] {
+    return Array.from(root.querySelectorAll<HTMLElement>('button:not([disabled]), select:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+      .filter((node) => node.getClientRects().length > 0);
+  }
+
+  private stepSelect(select: HTMLSelectElement, command: InterfaceCommand): void {
+    const delta = command === 'up' || command === 'left' ? -1 : 1;
+    const enabled = Array.from(select.options).filter((option) => !option.disabled); if (!enabled.length) return;
+    const current = enabled.findIndex((option) => option.value === select.value);
+    select.value = enabled[(Math.max(0, current) + delta + enabled.length) % enabled.length]!.value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  private trapModalFocus(event: KeyboardEvent): void {
+    const root = this.activeInterfaceSurface(); if (!root || root.id === 'main-menu') return;
+    const focusables = this.focusables(root); if (!focusables.length) return;
+    const current = document.activeElement instanceof HTMLElement ? focusables.indexOf(document.activeElement) : -1;
+    if (current < 0 || (!event.shiftKey && current === focusables.length - 1) || (event.shiftKey && current === 0)) {
+      event.preventDefault(); focusables[event.shiftKey ? focusables.length - 1 : 0]!.focus();
+    }
   }
 
   private renderPanel(panel: PanelName): void {
@@ -349,27 +457,57 @@ export class UIController {
 
   private openWorkshop(): void {
     if (!this.save) return;
+    this.focusReturn = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     this.resetStageScroll();
     byId('main-menu').classList.add('is-hidden');
     byId('side-panel').classList.add('is-hidden');
     this.workshop.open(this.save);
+    window.setTimeout(() => byId('workshop-close').focus(), 0);
   }
 
   private closeWorkshop(): void {
     this.workshop.close();
     this.actions.closeWorkshop();
     byId('main-menu').classList.remove('is-hidden');
+    this.focusReturn?.focus(); this.focusReturn = undefined;
   }
 
   private optionsWithLoadout(loadout: TankLoadout, testDrive: boolean, season: SeasonId, route: RouteId, missionId: ExpeditionMissionId): GameOptions {
     const options: GameOptions = { ...this.options, chassis: loadout.chassis, loadout, testDrive, biome: 'mountain-sea-valley', season, route, missionId };
-    if (options.mode === 'daily') options.seed = seedFromDate(); else delete options.seed;
+    if (options.mode === 'daily') { options.seed = seedFromDate(); options.dailyKey = dailyKey(); }
+    else { delete options.seed; delete options.dailyKey; }
     return options;
   }
 
   private updateInputHint(): void {
-    const touch = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
-    byId('control-hint').textContent = touch ? '手机 / Pad 双摇杆' : '键鼠 / 蓝牙手柄';
+    const touch = this.isTouchDevice();
+    byId('control-hint').textContent = touch
+      ? (canUseCoopOnDevice(true, [...this.connectedGamepads]) ? 'Pad 车组 / 双手柄已就绪' : 'Pad 共享车组 · 左驾驶右炮塔')
+      : '键鼠 / 蓝牙手柄';
+  }
+
+  private isTouchDevice(): boolean {
+    return document.body.classList.contains('force-touch') || matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+  }
+
+  private refreshCoopAvailability(): void {
+    const select = byId<HTMLSelectElement>('team-select');
+    const option = select.querySelector<HTMLOptionElement>('option[value="coop"]');
+    const touch = this.isTouchDevice();
+    const ready = canUseCoopOnDevice(touch, [...this.connectedGamepads]);
+    if (option) {
+      option.disabled = !ready;
+      option.textContent = touch ? (ready ? '双人同屏 · 双手柄就绪' : '双人同屏 · 需2只手柄') : '双人同屏';
+    }
+    if (!ready && select.value === 'coop') { select.value = 'crew'; this.options.coop = false; this.options.crewMode = true; }
+    this.updateInputHint();
+  }
+
+  private updateDailyBrief(): void {
+    const key = dailyKey(); const rule = dailyRuleForSeed(seedFromDate(), key);
+    const completed = this.save?.dailyChallenges[key]?.rewardClaimed;
+    byId('daily-title').textContent = rule.name + (completed ? ' · 已完成' : '');
+    byId('daily-detail').textContent = completed ? `今日 ${rule.reward} 星屑奖励已领取，仍可刷新最高分` : `${rule.detail} · 首通 ${rule.reward} 星屑`;
   }
 
   private resetStageScroll(): void {

@@ -93,7 +93,9 @@ WebGLRenderer → RenderPass → UnrealBloomPass → Chromatic ShaderPass → Ou
 
 ## 6. 存档与在线服务
 
-`SaveData.version` 当前为 2。新增字段必须提供默认值和迁移函数，不直接假设旧存档拥有新字段。排行榜和回放保留上限，防止 localStorage 无界增长。
+`SaveData.version` 当前为 3。`LocalSaveRepository.normalizeSave()` 为 v2、损坏字段和未来缺省字段提供白名单迁移；新增字段必须提供默认值，不能假设旧存档已经拥有。v3 增加装配方案、四季远征、伙伴世界、舒适度设置和每日挑战完成记录。排行榜保留 20 条，回放保留 5 条且最多 3600 帧，防止 localStorage 无界增长。
+
+一局结束时由 `settleRun()` 先在内存中生成完整的新存档（基础奖励、任务、每日首通、世界经验、图鉴、羁绊、成就、排行榜和归零回放），仓库只执行一次持久化写入，避免页面退出造成部分结算。
 
 在线扩展位于 `platform/providers.ts`：
 

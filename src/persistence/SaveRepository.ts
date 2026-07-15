@@ -31,6 +31,7 @@ export function createDefaultSave(): SaveData {
     seasonBestScores: {},
     techRanks: {},
     achievements: [],
+    dailyChallenges: {},
     world: {
       valleyXp: 0, valleyLevel: 1, restoredLandmarks: [], encyclopedia: [], activeCompanion: 'little-core',
       unlockedCompanions: ['little-core'], companionBond: { 'little-core': 0, sprout: 0, snowball: 0 }, themeMastery: {},

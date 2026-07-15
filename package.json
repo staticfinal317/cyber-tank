@@ -9,13 +9,15 @@
     "preview": "vite preview --host 0.0.0.0 --port 4318 --strictPort",
     "assets:models": "node scripts/generate-models.mjs",
     "test": "vitest run",
-    "check": "tsc -p tsconfig.json --noEmit && vitest run"
+    "test:ui": "python3 tests/with_server.py --server \"npm run dev\" --port 4317 -- node tests/ui_smoke.mjs",
+    "check": "tsc -p tsconfig.json --noEmit && vitest run && npm run test:ui"
   },
   "dependencies": {
     "three": "^0.179.1"
   },
   "devDependencies": {
     "@types/three": "^0.179.0",
+    "playwright": "^1.61.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.3",
     "vitest": "^3.2.4"

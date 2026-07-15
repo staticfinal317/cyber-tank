@@ -81,6 +81,9 @@ export class ThreeRenderer {
   private workshopTank?: THREE.Group;
   private workshopTurntable?: THREE.Group;
   private workshopArm?: THREE.Group;
+  private workshopProp?: THREE.Group;
+  private workshopGeneration = 0;
+  private assetRequestSerial = 0;
   private workshopAngle = -.5;
   private workshopRadius = 10.5;
   private workshopDragging = false;
@@ -90,6 +93,11 @@ export class ThreeRenderer {
   private quality: RenderQuality = 'balanced';
   private particleBudget = 160;
   private readonly modelAssets = new ModelAssetLibrary();
+  private readonly bulletGeometry = {
+    player: new THREE.CapsuleGeometry(.15, .5, 4, 6),
+    enemy: new THREE.CapsuleGeometry(.18, .28, 4, 6),
+  };
+  private readonly bulletMaterials = new Map<number, THREE.MeshBasicMaterial>();
   private reduceFlashes = false;
   private contextListener?: (state: 'lost' | 'restored') => void;
   private teamMarkerMesh?: THREE.Mesh;
@@ -100,7 +108,7 @@ export class ThreeRenderer {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = .92;
+    this.renderer.toneMappingExposure = .8;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     const room = new RoomEnvironment();
@@ -140,7 +148,11 @@ export class ThreeRenderer {
 
   registerModelAsset(slot: ModelSlot, spec: ModelAssetSpec): void { this.modelAssets.register(slot, spec); }
   setContextListener(listener: (state: 'lost' | 'restored') => void): void { this.contextListener = listener; }
-  setAccessibility(settings: { reduceFlashes: boolean }): void { this.reduceFlashes = settings.reduceFlashes; }
+  setAccessibility(settings: { reduceFlashes: boolean }): void {
+    this.reduceFlashes = settings.reduceFlashes;
+    if (this.reduceFlashes) this.shakePower = 0;
+    this.applyQualityVisuals();
+  }
 
   setSimulation(simulation: Simulation): void {
     this.viewMode = 'arena';
@@ -150,6 +162,7 @@ export class ThreeRenderer {
   }
 
   setQuality(quality: RenderQuality): void {
+    const changed = quality !== this.quality;
     this.quality = quality;
     this.modelAssets.setQuality(quality);
     this.particleBudget = quality === 'high' ? 280 : quality === 'balanced' ? 160 : 80;
@@ -157,6 +170,7 @@ export class ThreeRenderer {
     this.renderer.setPixelRatio(ratio); this.composer.setPixelRatio(ratio);
     this.renderer.shadowMap.enabled = quality !== 'battery';
     this.applyQualityVisuals(); this.resize();
+    if (changed) this.refreshExternalModels();
   }
 
   clearSimulation(): void {
@@ -183,37 +197,40 @@ export class ThreeRenderer {
   }
 
   stopReplay(): void {
-    this.replayGhosts.forEach((ghost) => this.entityRoot.remove(ghost));
+    this.replayGhosts.forEach((ghost) => removeAndDispose(this.entityRoot, ghost));
     this.replayGhosts = []; this.replayFrames = [];
   }
 
   setTheme(id: ThemeDefinition['id']): void {
+    this.invalidateWorkshopRequests();
     this.viewMode = 'arena';
     this.expeditionSeason = undefined;
-    this.renderer.toneMappingExposure = .92; this.bloom.threshold = .74; this.bloom.strength = .52; this.bloom.radius = .42;
+    this.renderer.toneMappingExposure = .8; this.bloom.threshold = .78; this.bloom.strength = .36; this.bloom.radius = .34;
     this.theme = THEMES[id];
-    while (this.world.children.length) this.world.remove(this.world.children[0]!);
+    clearAndDispose(this.world);
     this.buildWorld(this.theme);
     this.applyQualityVisuals();
   }
 
   setExpeditionSeason(season: SeasonId): void {
+    this.invalidateWorkshopRequests();
     this.viewMode = 'arena';
     this.expeditionSeason = season;
-    this.renderer.toneMappingExposure = season === 'winter' ? .86 : .94;
-    this.bloom.threshold = .7; this.bloom.strength = season === 'summer' ? .64 : .52; this.bloom.radius = .48;
-    while (this.world.children.length) this.world.remove(this.world.children[0]!);
+    this.renderer.toneMappingExposure = season === 'winter' ? .72 : .8;
+    this.bloom.threshold = .76; this.bloom.strength = season === 'summer' ? .42 : .36; this.bloom.radius = .36;
+    clearAndDispose(this.world);
     this.buildExpeditionWorld(season);
     this.applyQualityVisuals();
   }
 
   showWorkshop(loadout: TankLoadout, season: SeasonId = 'spring'): void {
+    this.invalidateWorkshopRequests();
     this.simulation = undefined;
     this.stopReplay();
     this.clearEntities();
     this.viewMode = 'workshop';
-    this.renderer.toneMappingExposure = .58; this.bloom.threshold = .88; this.bloom.strength = .26; this.bloom.radius = .28;
-    while (this.world.children.length) this.world.remove(this.world.children[0]!);
+    this.renderer.toneMappingExposure = .52; this.bloom.threshold = .9; this.bloom.strength = .18; this.bloom.radius = .22;
+    clearAndDispose(this.world);
     this.expeditionSeason = season;
     this.buildWorkshop(loadout, season);
     this.applyQualityVisuals();
@@ -221,7 +238,7 @@ export class ThreeRenderer {
 
   updateWorkshopLoadout(loadout: TankLoadout): void {
     if (this.viewMode !== 'workshop') return;
-    if (this.workshopTank) this.entityRoot.remove(this.workshopTank);
+    if (this.workshopTank) removeAndDispose(this.entityRoot, this.workshopTank);
     this.workshopTank = this.createTank(1, loadout);
     this.workshopTank.scale.setScalar(1.72);
     this.workshopTank.position.set(-.55, .48, .1);
@@ -237,7 +254,7 @@ export class ThreeRenderer {
     this.updateReplay();
     this.updateParticles(dt);
     this.updateTrailMarks(dt);
-    const shake = this.shakePower;
+    const shake = this.reduceFlashes ? 0 : this.shakePower;
     this.shakePower = Math.max(0, this.shakePower - dt * 3.8);
     const x = (Math.random() - .5) * shake;
     const y = (Math.random() - .5) * shake * .5;
@@ -274,12 +291,12 @@ export class ThreeRenderer {
   }
 
   burst(pos: Vec2, color: number, heavy = false): void {
-    const desired = this.reduceFlashes ? (heavy ? 10 : 4) : heavy ? (this.quality === 'battery' ? 16 : 32) : (this.quality === 'battery' ? 6 : 10);
+    const desired = this.reduceFlashes ? (heavy ? 5 : 2) : heavy ? (this.quality === 'battery' ? 16 : 32) : (this.quality === 'battery' ? 6 : 10);
     const count = Math.max(0, Math.min(desired, this.particleBudget - this.particles.length));
     for (let i = 0; i < count; i += 1) {
       const isDebris = i % 3 === 0;
       const geometry = isDebris ? new THREE.BoxGeometry(.12, .1, .2) : new THREE.SphereGeometry(.07, 5, 4);
-      const mesh = new THREE.Mesh(geometry, material(i % 4 === 0 ? 0xffd65a : color, color, 2.2));
+      const mesh = new THREE.Mesh(geometry, material(i % 4 === 0 ? 0xffd65a : color, color, this.reduceFlashes ? .55 : 2.2));
       mesh.position.set(pos.x, .5 + Math.random() * .7, pos.z);
       this.effectRoot.add(mesh);
       const angle = Math.random() * Math.PI * 2;
@@ -290,7 +307,7 @@ export class ThreeRenderer {
         life: maxLife, maxLife, spin: new THREE.Vector3(Math.random() * 8, Math.random() * 8, Math.random() * 8),
       });
     }
-    this.shakePower = Math.max(this.shakePower, this.reduceFlashes ? (heavy ? .2 : .05) : heavy ? .75 : .16);
+    this.shakePower = Math.max(this.shakePower, this.reduceFlashes ? 0 : heavy ? .75 : .16);
     if (this.reduceFlashes) return;
     const flash = new THREE.PointLight(color, heavy ? 12 : 5, heavy ? 10 : 4, 2);
     flash.position.set(pos.x, 1.3, pos.z); this.effectRoot.add(flash);
@@ -313,7 +330,7 @@ export class ThreeRenderer {
     const start = performance.now();
     const animate = () => {
       const t = (performance.now() - start) / 520;
-      if (t >= 1) { this.effectRoot.remove(ring); return; }
+      if (t >= 1) { removeAndDispose(this.effectRoot, ring); return; }
       ring.scale.setScalar(1 + t * 9); (ring.material as THREE.MeshBasicMaterial).opacity = 1 - t;
       requestAnimationFrame(animate);
     };
@@ -415,6 +432,23 @@ export class ThreeRenderer {
       const beacon = new THREE.Mesh(new THREE.RingGeometry(.18, .26, 20), routeMat); beacon.rotation.x = -Math.PI / 2;
       const riverRoute = i % 2 === 0; beacon.position.set(riverRoute ? 0 : -7.2, .035, 8.5 - i * 1.75); beacon.userData.routeBeacon = true; this.world.add(beacon);
     }
+    const routePaths = [
+      { color: palette.water, points: [[0, .045, 10], [-.5, .05, 5], [.45, .05, 0], [-.35, .05, -5], [0, .05, -10]] },
+      { color: SEASONS[season].accent, points: [[-7.2, .05, 10], [-8.1, .08, 5], [-6.5, .06, 1], [-8.3, .1, -4], [-6.9, .06, -10]] },
+    ] as const;
+    routePaths.forEach((route, index) => {
+      const curve = new THREE.CatmullRomCurve3(route.points.map(([x, y, z]) => new THREE.Vector3(x, y, z)));
+      const spline = new THREE.Mesh(new THREE.TubeGeometry(curve, 72, .045, 7, false), new THREE.MeshBasicMaterial({ color: route.color, transparent: true, opacity: .72, blending: THREE.AdditiveBlending, depthWrite: false }));
+      spline.userData.routeBeacon = true; spline.userData.routeIndex = index; this.world.add(spline);
+    });
+    for (let i = 0; i < 7; i += 1) {
+      const cloud = new THREE.Group();
+      for (let puff = 0; puff < 4; puff += 1) {
+        const mesh = new THREE.Mesh(new THREE.SphereGeometry(.7 + puff * .08, 10, 7), new THREE.MeshBasicMaterial({ color: palette.sky, transparent: true, opacity: .18, depthWrite: false, fog: false }));
+        mesh.position.set(puff * .65, Math.sin(puff) * .18, 0); mesh.scale.y = .48; cloud.add(mesh);
+      }
+      cloud.position.set(-13 + i * 4.5, 5.8 + (i % 3) * .7, -13.2 - (i % 2)); cloud.userData.distantCloud = true; this.world.add(cloud);
+    }
 
     this.safeZone = new THREE.Mesh(new THREE.RingGeometry(.985, 1, 96), new THREE.MeshBasicMaterial({ color: SEASONS[season].accent, transparent: true, opacity: .65, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
     this.safeZone.rotation.x = -Math.PI / 2; this.safeZone.position.y = .04; this.safeZone.visible = false; this.world.add(this.safeZone);
@@ -452,11 +486,14 @@ export class ThreeRenderer {
       const qualityRatio = this.quality === 'high' ? 1 : this.quality === 'balanced' ? .7 : .38;
       particle.visible = index / this.weatherParticles.length < (.32 + intensity * .68) * qualityRatio;
     });
-    if (this.simulation?.weather.warning && this.expeditionSeason === 'summer') {
-      const pulse = .82 + Math.max(0, Math.sin(this.elapsed * 9)) * .38;
+    if (!this.reduceFlashes && this.simulation?.weather.warning && this.expeditionSeason === 'summer') {
+      const pulse = .78 + Math.max(0, Math.sin(this.elapsed * 7)) * .2;
       this.renderer.toneMappingExposure = pulse;
-    } else if (this.viewMode === 'arena') this.renderer.toneMappingExposure = this.expeditionSeason === 'winter' ? .86 : .94;
-    this.world.children.forEach((child) => { if (child.userData.routeBeacon) child.rotation.z += dt * .7; });
+    } else if (this.viewMode === 'arena') this.renderer.toneMappingExposure = this.expeditionSeason === 'winter' ? .72 : .8;
+    this.world.children.forEach((child) => {
+      if (child.userData.routeBeacon && child instanceof THREE.Mesh && child.geometry.type === 'RingGeometry') child.rotation.z += dt * .7;
+      if (child.userData.distantCloud) child.position.x = child.position.x > 16 ? -16 : child.position.x + dt * .08;
+    });
   }
 
   private buildWorkshop(loadout: TankLoadout, season: SeasonId): void {
@@ -511,12 +548,20 @@ export class ThreeRenderer {
     this.workshopTank = this.createTank(1, loadout); this.workshopTank.scale.setScalar(1.72); this.workshopTank.position.set(-.55, .48, .1); this.workshopTank.rotation.y = .72; this.entityRoot.add(this.workshopTank);
     const tankBuddy = this.workshopTank.userData.companion as THREE.Group | undefined; if (tankBuddy) tankBuddy.visible = false;
     const workshopBuddy = this.createWorkshopBuddy(); workshopBuddy.position.set(-3.35, .42, 1.1); workshopBuddy.rotation.y = .35; this.world.add(workshopBuddy);
-    void this.attachWorkshopProp();
+    const generation = this.workshopGeneration;
+    void this.attachWorkshopProp(generation);
   }
 
-  private async attachWorkshopProp(): Promise<void> {
-    const prop = await this.modelAssets.instantiate('workshop-prop'); if (!prop || this.viewMode !== 'workshop') return;
+  private async attachWorkshopProp(generation: number): Promise<void> {
+    const expectedWorld = this.world;
+    const prop = await this.modelAssets.instantiate('workshop-prop');
+    if (!prop || generation !== this.workshopGeneration || this.viewMode !== 'workshop' || expectedWorld !== this.world) {
+      if (prop) disposeObjectTree(prop);
+      return;
+    }
+    if (this.workshopProp) removeAndDispose(this.world, this.workshopProp);
     prop.position.set(-4.9, .1, -1.8); prop.scale.setScalar(.72); this.world.add(prop);
+    this.workshopProp = prop;
   }
 
   private createWorkshopArm(): THREE.Group {
@@ -594,9 +639,8 @@ export class ThreeRenderer {
       const companion = group.userData.companion as THREE.Group | undefined;
       if (companion) { companion.position.y = 1.25 + Math.sin(this.elapsed * 3.2 + player.slot) * .14; companion.rotation.y += .025; }
       const shield = group.userData.shield as THREE.Mesh | undefined;
-      group.traverse((child) => {
-        if (child instanceof THREE.Mesh && child !== shield) child.visible = player.invulnerable > 0 ? Math.sin(this.elapsed * 35) > -.15 : true;
-      });
+      const visualRoot = group.userData.visualRoot as THREE.Group | undefined;
+      if (visualRoot) visualRoot.visible = this.reduceFlashes || player.invulnerable <= 0 ? true : Math.sin(this.elapsed * 18) > -.25;
       if (shield) { shield.visible = player.shield > 0; shield.rotation.y += .025; }
       if (player.alive) this.spawnSurfaceTrail(player);
     });
@@ -609,8 +653,9 @@ export class ThreeRenderer {
       const body = group.userData.body as THREE.Mesh | undefined;
       if (body) {
         const mat = body.material as THREE.MeshStandardMaterial;
-        mat.emissiveIntensity = enemy.hitFlash > 0 ? 4 : enemy.kind === 'boss' ? 1.5 : .8;
-        mat.color.setHex(enemy.hitFlash > 0 ? 0xffffff : (group.userData.baseColor as number | undefined) ?? ENEMIES[enemy.kind].color);
+        const baseIntensity = enemy.kind === 'boss' ? 1.5 : .8;
+        mat.emissiveIntensity = enemy.hitFlash > 0 ? (this.reduceFlashes ? baseIntensity + .25 : 3) : baseIntensity;
+        mat.color.setHex(enemy.hitFlash > 0 && !this.reduceFlashes ? 0xffffff : (group.userData.baseColor as number | undefined) ?? ENEMIES[enemy.kind].color);
       }
       group.traverse((child) => {
         if (!(child instanceof THREE.Mesh)) return;
@@ -618,7 +663,12 @@ export class ThreeRenderer {
         materials.forEach((candidate) => {
           if (!(candidate instanceof THREE.Material)) return;
           if (candidate.userData.baseOpacity === undefined && 'opacity' in candidate) candidate.userData.baseOpacity = candidate.opacity;
-          candidate.transparent = enemy.cloaked || candidate.transparent;
+          if (candidate.userData.baseTransparent === undefined) candidate.userData.baseTransparent = candidate.transparent;
+          const transparent = enemy.cloaked || Boolean(candidate.userData.baseTransparent);
+          if (candidate.transparent !== transparent) {
+            candidate.transparent = transparent;
+            candidate.needsUpdate = true;
+          }
           if (enemy.cloaked && 'opacity' in candidate) candidate.opacity = child === body ? .22 : .38;
           else if ('opacity' in candidate && candidate.userData.baseOpacity !== undefined) candidate.opacity = candidate.userData.baseOpacity as number;
         });
@@ -650,7 +700,7 @@ export class ThreeRenderer {
 
   private syncCollection<T extends { id: number }, M extends THREE.Object3D>(items: readonly T[], map: Map<number, M>, create: (item: T) => M): void {
     const ids = new Set(items.map((item) => item.id));
-    map.forEach((mesh, id) => { if (!ids.has(id)) { this.entityRoot.remove(mesh); map.delete(id); } });
+    map.forEach((mesh, id) => { if (!ids.has(id)) { removeAndDispose(this.entityRoot, mesh); map.delete(id); } });
     items.forEach((item) => {
       if (map.has(item.id)) return;
       const mesh = create(item); map.set(item.id, mesh); this.entityRoot.add(mesh);
@@ -661,12 +711,13 @@ export class ThreeRenderer {
     const group = new THREE.Group();
     group.scale.setScalar(1.22);
     const visualRoot = new THREE.Group(); group.add(visualRoot);
+    const movementRoot = new THREE.Group(); movementRoot.name = 'PROCEDURAL_MOVEMENT'; visualRoot.add(movementRoot);
     const bodyColor = loadout ? PAINTS[loadout.paint].color : slot === 1 ? 0xffd84a : 0x6ff2ff;
     const bodyMat = material(bodyColor, bodyColor, loadout ? .38 : 1.15);
     const darkMat = material(0x101b29, slot === 1 ? 0xffd84a : 0x5eeaff, .28, .5);
     const cyan = material(0x9af8ff, 0x20dfff, loadout ? .62 : 1.8, .22);
     const body = roundedBox(1.35, .5, 1.75, .24, bodyMat); body.position.y = .46; visualRoot.add(body);
-    this.addMovementModule(visualRoot, loadout?.movement ?? 'snow-tread', darkMat, cyan);
+    this.addMovementModule(movementRoot, loadout?.movement ?? 'snow-tread', darkMat, cyan);
     if (loadout) {
       const sideRail = roundedBox(1.5, .16, .34, .07, darkMat); sideRail.position.set(0, .56, .52); visualRoot.add(sideRail);
       for (const x of [-.46, 0, .46]) { const panel = roundedBox(.34, .09, .42, .06, bodyMat); panel.position.set(x, .75, .28); panel.rotation.y = -.08 * x; visualRoot.add(panel); }
@@ -690,18 +741,56 @@ export class ThreeRenderer {
     const buddyGeometry = companionId === 'sprout' ? new THREE.SphereGeometry(.19, 10, 7) : companionId === 'snowball' ? new THREE.IcosahedronGeometry(.2, 1) : new THREE.OctahedronGeometry(.18, 0);
     const buddyCore = new THREE.Mesh(buddyGeometry, material(buddyColor, buddyColor, 1.5)); companion.add(buddyCore);
     const buddyRing = new THREE.Mesh(new THREE.TorusGeometry(.27, .025, 5, 20), new THREE.MeshBasicMaterial({ color: buddyColor })); buddyRing.rotation.x = Math.PI / 2; companion.add(buddyRing); group.add(companion);
-    group.userData.turret = turret; group.userData.shield = shield; group.userData.companion = companion;
-    void this.attachOptionalModel(group, visualRoot, 'player-tank');
+    group.userData.turret = turret; group.userData.proceduralTurret = turret; group.userData.shield = shield;
+    group.userData.companion = companion; group.userData.visualRoot = visualRoot; group.userData.movementRoot = movementRoot;
+    group.userData.slot = slot;
+    group.userData.loadout = loadout ? { ...loadout, ammoSlots: [...loadout.ammoSlots] } : undefined;
+    group.userData.assetSlot = 'player-tank';
+    void this.attachOptionalModel(group, visualRoot, 'player-tank', loadout);
     return group;
   }
 
-  private async attachOptionalModel(group: THREE.Group, proceduralRoot: THREE.Group, slot: ModelSlot): Promise<void> {
+  private async attachOptionalModel(group: THREE.Group, proceduralRoot: THREE.Group, slot: ModelSlot, loadout?: TankLoadout): Promise<void> {
+    const requestId = ++this.assetRequestSerial;
+    group.userData.assetRequestId = requestId;
     const model = await this.modelAssets.instantiate(slot); if (!model) return;
-    proceduralRoot.children.forEach((child) => { child.visible = false; });
+    if (!group.parent || group.userData.assetRequestId !== requestId) { disposeObjectTree(model); return; }
+    const previous = group.userData.assetModel as THREE.Group | undefined;
+    if (previous) removeAndDispose(proceduralRoot, previous);
+    const movementRoot = group.userData.movementRoot as THREE.Group | undefined;
+    proceduralRoot.children.forEach((child) => { child.visible = child === movementRoot; });
+    this.applyTankModelStyle(model, loadout, group.userData.slot as 1 | 2);
     proceduralRoot.add(model);
     const namedTurret = model.getObjectByName('CYBER_TURRET');
     if (namedTurret) group.userData.turret = namedTurret;
+    else group.userData.turret = group.userData.proceduralTurret;
+    group.userData.assetModel = model;
     group.userData.externalModel = true;
+  }
+
+  private applyTankModelStyle(model: THREE.Group, loadout: TankLoadout | undefined, slot: 1 | 2): void {
+    const paint = loadout ? PAINTS[loadout.paint].color : slot === 1 ? 0xffd84a : 0x6ff2ff;
+    const lightColors = { cyan: 0x35e8ff, gold: 0xffd84a, lime: 0x8cff72, violet: 0xa77cff } as const;
+    const light = loadout ? lightColors[loadout.light] : slot === 1 ? lightColors.gold : lightColors.cyan;
+    model.traverse((object) => {
+      const name = object.name.toUpperCase();
+      if (/(^|_)(WHEEL|HUB|TRACK)/.test(name)) object.visible = false;
+      if (!(object instanceof THREE.Mesh)) return;
+      const entries = Array.isArray(object.material) ? object.material : [object.material];
+      entries.forEach((entry) => {
+        if (!(entry instanceof THREE.MeshStandardMaterial)) return;
+        if (/(ARMORED|BODY|CHASSIS|MUZZLE|SUNRISE)/.test(name) || /SUNRISE|ALLOY/i.test(entry.name)) {
+          entry.color.setHex(paint);
+          entry.emissive.setHex(paint);
+          entry.emissiveIntensity = .34;
+        }
+        if (/(ENERGY|LIGHT|CORE|BARREL|SENSOR)/.test(name) || /CYAN|ENERGY|SENSOR/i.test(entry.name)) {
+          entry.color.setHex(light);
+          entry.emissive.setHex(light);
+          entry.emissiveIntensity = 1.25;
+        }
+      });
+    });
   }
 
   private addMovementModule(group: THREE.Group, id: MovementModuleId, darkMat: THREE.Material, glowMat: THREE.Material): void {
@@ -787,23 +876,57 @@ export class ThreeRenderer {
     const hp = new THREE.Mesh(new THREE.PlaneGeometry(enemy.kind === 'boss' ? 2.9 : 1.2, .065), new THREE.MeshBasicMaterial({ color: enemy.kind === 'boss' ? 0xffd34a : 0x75ffad, side: THREE.DoubleSide }));
     hp.position.set(0, enemy.kind === 'boss' ? 3.24 : 1.54, -.02); hp.rotation.x = -Math.PI / 4; group.add(hp);
     group.userData.body = body; group.userData.hp = hp; group.userData.hpBack = hpBack; group.userData.baseColor = visualColor;
+    group.userData.assetSlot = enemy.kind === 'boss' ? 'enemy-boss' : undefined;
     if (enemy.kind === 'boss') void this.attachBossModel(group);
     return group;
   }
 
   private async attachBossModel(group: THREE.Group): Promise<void> {
+    const requestId = ++this.assetRequestSerial;
+    group.userData.assetRequestId = requestId;
     const model = await this.modelAssets.instantiate('enemy-boss'); if (!model) return;
+    if (!group.parent || group.userData.assetRequestId !== requestId) { disposeObjectTree(model); return; }
+    const previous = group.userData.assetModel as THREE.Group | undefined;
+    if (previous) removeAndDispose(group, previous);
     const hp = group.userData.hp as THREE.Object3D | undefined;
     const hpBack = group.userData.hpBack as THREE.Object3D | undefined;
     group.children.slice().forEach((child) => { if (child !== hp && child !== hpBack) child.visible = false; });
-    group.add(model); group.userData.externalModel = true;
+    group.add(model); group.userData.assetModel = model; group.userData.externalModel = true;
+  }
+
+  private refreshExternalModels(): void {
+    const tanks = new Set<THREE.Group>([
+      ...this.playerMeshes.values(),
+      ...this.replayGhosts,
+      ...(this.workshopTank ? [this.workshopTank] : []),
+    ]);
+    tanks.forEach((group) => {
+      const visualRoot = group.userData.visualRoot as THREE.Group | undefined;
+      if (!visualRoot) return;
+      void this.attachOptionalModel(group, visualRoot, 'player-tank', group.userData.loadout as TankLoadout | undefined);
+    });
+    this.enemyMeshes.forEach((group) => {
+      if (group.userData.assetSlot === 'enemy-boss') void this.attachBossModel(group);
+    });
+    if (this.viewMode === 'workshop') {
+      this.workshopGeneration += 1;
+      void this.attachWorkshopProp(this.workshopGeneration);
+    }
+  }
+
+  private invalidateWorkshopRequests(): void {
+    this.workshopGeneration += 1;
+    this.workshopProp = undefined;
   }
 
   private createBullet(bullet: ProjectileEntity): THREE.Mesh {
-    const mesh = new THREE.Mesh(
-      new THREE.CapsuleGeometry(bullet.radius, bullet.team === 'player' ? .5 : .28, 4, 6),
-      new THREE.MeshBasicMaterial({ color: bullet.color, transparent: true, opacity: .96, blending: THREE.AdditiveBlending }),
-    );
+    let bulletMaterial = this.bulletMaterials.get(bullet.color);
+    if (!bulletMaterial) {
+      bulletMaterial = new THREE.MeshBasicMaterial({ color: bullet.color, transparent: true, opacity: .96, blending: THREE.AdditiveBlending });
+      this.bulletMaterials.set(bullet.color, bulletMaterial);
+    }
+    const mesh = new THREE.Mesh(this.bulletGeometry[bullet.team], bulletMaterial);
+    mesh.userData.retainSharedResources = true;
     mesh.rotation.x = Math.PI / 2; return mesh;
   }
 
@@ -824,7 +947,7 @@ export class ThreeRenderer {
       particle.mesh.rotation.x += particle.spin.x * dt; particle.mesh.rotation.y += particle.spin.y * dt;
       const scale = Math.max(.01, particle.life / particle.maxLife);
       particle.mesh.scale.setScalar(scale);
-      if (particle.life <= 0) { this.effectRoot.remove(particle.mesh); particle.mesh.geometry.dispose(); this.particles.splice(i, 1); }
+      if (particle.life <= 0) { removeAndDispose(this.effectRoot, particle.mesh); this.particles.splice(i, 1); }
     }
   }
 
@@ -875,9 +998,13 @@ export class ThreeRenderer {
 
   private applyQualityVisuals(): void {
     const factor = this.quality === 'high' ? 1 : this.quality === 'balanced' ? .74 : .42;
-    const base = this.viewMode === 'workshop' ? .3 : this.expeditionSeason === 'summer' ? .64 : .54;
-    this.bloom.strength = base * factor; this.bloom.radius = this.quality === 'high' ? .48 : this.quality === 'balanced' ? .35 : .18;
+    const base = this.viewMode === 'workshop' ? .18 : this.expeditionSeason === 'summer' ? .42 : .36;
+    const comfortFactor = this.reduceFlashes ? .35 : 1;
+    this.bloom.threshold = this.reduceFlashes ? .9 : this.viewMode === 'workshop' ? .88 : .76;
+    this.bloom.strength = base * factor * comfortFactor;
+    this.bloom.radius = this.reduceFlashes ? .16 : this.quality === 'high' ? .38 : this.quality === 'balanced' ? .3 : .16;
     this.bloom.enabled = this.quality !== 'battery';
+    this.renderer.toneMappingExposure = this.viewMode === 'workshop' ? .52 : this.expeditionSeason === 'winter' ? .72 : .8;
   }
 
   private updateReplay(): void {
@@ -939,8 +1066,41 @@ export class ThreeRenderer {
 
   private clearEntities(): void {
     this.playerMeshes.clear(); this.enemyMeshes.clear(); this.bulletMeshes.clear(); this.pickupMeshes.clear();
-    while (this.entityRoot.children.length) this.entityRoot.remove(this.entityRoot.children[0]!);
+    clearAndDispose(this.entityRoot);
     while (this.trailMarks.length) this.removeTrailMark(this.trailMarks.length - 1);
     this.lastTrailPositions.clear();
   }
+}
+
+function hasRetainedFlag(object: THREE.Object3D, root: THREE.Object3D, flag: 'retainSharedResources' | 'retainSharedGeometry' | 'retainSharedMaterial'): boolean {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (current.userData.retainSharedResources || current.userData[flag]) return true;
+    if (current === root) break;
+    current = current.parent;
+  }
+  return false;
+}
+
+export function disposeObjectTree(root: THREE.Object3D): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    if (!hasRetainedFlag(object, root, 'retainSharedGeometry')) geometries.add(object.geometry);
+    if (hasRetainedFlag(object, root, 'retainSharedMaterial')) return;
+    const entries = Array.isArray(object.material) ? object.material : [object.material];
+    entries.forEach((entry) => materials.add(entry));
+  });
+  geometries.forEach((geometry) => geometry.dispose());
+  materials.forEach((entry) => entry.dispose());
+}
+
+function removeAndDispose(parent: THREE.Object3D, object: THREE.Object3D): void {
+  parent.remove(object);
+  disposeObjectTree(object);
+}
+
+function clearAndDispose(root: THREE.Object3D): void {
+  root.children.slice().forEach((child) => removeAndDispose(root, child));
 }

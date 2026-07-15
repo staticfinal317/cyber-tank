@@ -110,9 +110,8 @@ export class WorkshopController {
       const button = document.createElement('button'); button.className = `module-card${selected ? ' is-selected' : ''}${unlocked ? '' : ' is-locked'}`;
       button.style.setProperty('--module-color', `#${color.toString(16).padStart(6, '0')}`);
       button.draggable = unlocked; button.dataset.moduleId = id;
-      const icon = this.category === 'movement' ? 'ph-tire' : this.category === 'ammo' ? 'ph-crosshair' : this.category === 'tool' ? 'ph-wrench' : 'ph-paint-brush';
       const recommended = this.category === 'movement' && id === recommendedMovement(this.season, this.mission);
-      button.innerHTML = `<i class="ph ${icon} module-visual"></i><span>${name}</span><small>${unlocked ? description : `${cost} 星屑解锁`}</small>${selected ? '<em>已安装</em>' : recommended ? '<em>任务推荐</em>' : ''}`;
+      button.innerHTML = `<i class="module-visual module-visual--${id}" aria-hidden="true"><b></b><b></b><b></b></i><span>${name}</span><small>${unlocked ? description : `${cost} 星屑解锁`}</small>${selected ? '<em>已安装</em>' : recommended ? '<em>任务推荐</em>' : ''}`;
       const choose = async () => {
         if (!unlocked) { if (await this.actions.unlock(this.category, id, cost)) { this.renderItems(); } return; }
         apply(); this.dirty = true; this.renderItems(); this.renderDetails(); this.renderAmmoSlots(); this.renderRouteAccess(); this.actions.preview(cloneLoadout(this.loadout!), this.season);
