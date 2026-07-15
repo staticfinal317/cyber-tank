@@ -1,0 +1,23 @@
+/* Phosphor Icons 2.1.2 — MIT. Only mappings used by Cyber Tank are included. */
+@font-face {
+  font-family: "Phosphor";
+  src: url("/fonts/Phosphor.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+.ph { font-family: "Phosphor" !important; speak: never; font-style: normal; font-weight: normal; font-variant: normal; text-transform: none; line-height: 1; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+.ph-arrows-clockwise::before { content: "\e094"; }
+.ph-caret-double-right::before { content: "\e12a"; }
+.ph-cloud-rain::before { content: "\e1b4"; }
+.ph-copy::before { content: "\e1ca"; }
+.ph-crosshair::before { content: "\e1d6"; }
+.ph-floppy-disk::before { content: "\e248"; }
+.ph-mountains::before { content: "\e7ae"; }
+.ph-paint-brush::before { content: "\e6f0"; }
+.ph-road-horizon::before { content: "\e838"; }
+.ph-tire::before { content: "\edd2"; }
+.ph-waves::before { content: "\e6de"; }
+.ph-wrench::before { content: "\e5d4"; }
+.ph-x::before { content: "\e4f6"; }

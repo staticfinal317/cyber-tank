@@ -8,6 +8,8 @@ const ZERO: Vec2 = { x: 0, z: 0 };
 export class InputManager {
   private keys = new Set<string>();
   private pressedAbilities = new Set<AbilityId>();
+  private ammoSwitchPressed = false;
+  private padSwitchHeld = [false, false];
   private mouse: PointerState = { x: 0, y: 0, active: false };
   private touchMove: Vec2 = { ...ZERO };
   private touchAim: Vec2 = { x: 0, z: -1 };
@@ -36,6 +38,7 @@ export class InputManager {
         aim: gamepad.aim.x || gamepad.aim.z ? gamepad.aim : { x: 0, z: -1 },
         firing: gamepad.firing || this.keys.has('Enter'),
         abilities: gamepad.abilities,
+        switchAmmo: gamepad.switchAmmo,
       };
     }
     const keyboard = this.keyboardVector('KeyA', 'KeyD', 'KeyW', 'KeyS', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown');
@@ -46,8 +49,10 @@ export class InputManager {
     const aim = this.touchFiring ? this.touchAim
       : gamepad.aim.x || gamepad.aim.z ? gamepad.aim : mouseAim;
     const abilities = new Set<AbilityId>([...this.pressedAbilities, ...gamepad.abilities]);
+    const switchAmmo = this.ammoSwitchPressed || gamepad.switchAmmo;
     this.pressedAbilities.clear();
-    return { move, aim, firing: this.touchFiring || this.mouse.active || this.keys.has('Space') || gamepad.firing, abilities };
+    this.ammoSwitchPressed = false;
+    return { move, aim, firing: this.touchFiring || this.mouse.active || this.keys.has('Space') || gamepad.firing, abilities, switchAmmo };
   }
 
   private keyboardVector(left: string, right: string, up: string, down: string, left2?: string, right2?: string, up2?: string, down2?: string): Vec2 {
@@ -57,19 +62,20 @@ export class InputManager {
     return l > 1 ? { x: x / l, z: z / l } : { x, z };
   }
 
-  private readGamepad(index: number): { move: Vec2; aim: Vec2; firing: boolean; abilities: Set<AbilityId> } {
+  private readGamepad(index: number): { move: Vec2; aim: Vec2; firing: boolean; abilities: Set<AbilityId>; switchAmmo: boolean } {
     const pad = navigator.getGamepads?.()[index];
-    if (!pad) return { move: { ...ZERO }, aim: { ...ZERO }, firing: false, abilities: new Set() };
+    if (!pad) return { move: { ...ZERO }, aim: { ...ZERO }, firing: false, abilities: new Set(), switchAmmo: false };
     const dead = (value = 0) => Math.abs(value) < .16 ? 0 : value;
     const abilities = new Set<AbilityId>();
     if (pad.buttons[4]?.pressed) abilities.add('shield');
     if (pad.buttons[5]?.pressed) abilities.add('repair');
     if (pad.buttons[1]?.pressed) abilities.add('dash');
     if (pad.buttons[3]?.pressed) abilities.add('storm');
+    const held = Boolean(pad.buttons[2]?.pressed); const switchAmmo = held && !this.padSwitchHeld[index]; this.padSwitchHeld[index] = held;
     return {
       move: { x: dead(pad.axes[0]), z: dead(pad.axes[1]) },
       aim: { x: dead(pad.axes[2]), z: dead(pad.axes[3]) },
-      firing: Boolean(pad.buttons[7]?.pressed || pad.buttons[0]?.pressed), abilities,
+      firing: Boolean(pad.buttons[7]?.pressed || pad.buttons[0]?.pressed), abilities, switchAmmo,
     };
   }
 
@@ -128,6 +134,7 @@ export class InputManager {
       button.addEventListener('pointerup', () => button.classList.remove('is-pressed'));
       button.addEventListener('pointercancel', () => button.classList.remove('is-pressed'));
     });
+    document.querySelector<HTMLElement>('[data-control="ammo-switch"]')?.addEventListener('pointerdown', (event) => { event.preventDefault(); this.ammoSwitchPressed = true; });
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
@@ -135,6 +142,7 @@ export class InputManager {
     const ability: Partial<Record<string, AbilityId>> = { Digit1: 'shield', Digit2: 'repair', Digit3: 'dash', Digit4: 'storm' };
     const selected = ability[event.code];
     if (selected) this.pressedAbilities.add(selected);
+    if (event.code === 'KeyQ') this.ammoSwitchPressed = true;
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) event.preventDefault();
   };
   private onKeyUp = (event: KeyboardEvent): void => { this.keys.delete(event.code); };

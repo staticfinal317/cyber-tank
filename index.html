@@ -55,9 +55,53 @@
             <button class="ability-button repair" data-ability="repair"><span>修</span><small>修复</small><i data-cooldown="repair"></i></button>
             <button class="ability-button dash" data-ability="dash"><span>速</span><small>冲刺</small><i data-cooldown="dash"></i></button>
             <button class="ability-button storm" data-ability="storm"><span>电</span><small>电磁</small><i data-cooldown="storm"></i></button>
+            <button class="ammo-switch-button" data-control="ammo-switch"><i class="ph ph-arrows-clockwise"></i><span>换弹</span></button>
             <button class="fire-button" data-control="fire"><i></i><span>发射</span></button>
           </div>
         </div>
+
+        <section id="workshop" class="overlay workshop-overlay is-hidden" aria-label="远征工坊">
+          <header class="workshop-header">
+            <div class="workshop-title"><span>CYBER TANK / EXPEDITION BAY</span><h1>远征工坊</h1></div>
+            <div class="workshop-presets-wrap"><span>装配方案</span><div id="workshop-presets" class="workshop-presets"></div></div>
+            <button id="workshop-close" class="workshop-close" aria-label="返回基地"><i class="ph ph-x"></i><span>返回</span></button>
+          </header>
+
+          <nav class="workshop-categories" aria-label="改装分类">
+            <button class="is-selected" data-workshop-category="movement"><i class="ph ph-tire"></i><span>行走</span></button>
+            <button data-workshop-category="ammo"><i class="ph ph-crosshair"></i><span>炮弹</span></button>
+            <button data-workshop-category="tool"><i class="ph ph-wrench"></i><span>工具</span></button>
+            <button data-workshop-category="appearance"><i class="ph ph-paint-brush"></i><span>外观</span></button>
+          </nav>
+
+          <div class="weather-buddy" aria-live="polite">
+            <i class="ph ph-cloud-rain"></i><div><span>小核天气助手</span><strong id="workshop-forecast">春雨将至</strong></div>
+          </div>
+
+          <aside class="terrain-panel">
+            <span class="terrain-kicker">目的地适配</span>
+            <h2>山海谷 · 春季</h2>
+            <p id="workshop-route-hint">河道水位上涨，浮航路线将开放。</p>
+            <div class="terrain-ratings">
+              <div id="rating-mountain"><span><i class="ph ph-mountains"></i>山地</span><em><i></i></em><b>3 / 5</b></div>
+              <div id="rating-water"><span><i class="ph ph-waves"></i>水域</span><em><i></i></em><b>5 / 5</b></div>
+              <div id="rating-road"><span><i class="ph ph-road-horizon"></i>公路</span><em><i></i></em><b>4 / 5</b></div>
+            </div>
+            <div class="module-summary"><span>当前模块</span><strong id="workshop-module-name">浮航模块</strong><p id="workshop-module-description">轮毂展开为浮航环，可以进入湖泊与近海水道。</p></div>
+            <div class="ammo-slots" aria-label="双炮弹槽"><button id="ammo-slot-0"></button><button id="ammo-slot-1"></button></div>
+          </aside>
+
+          <footer class="workshop-dock">
+            <div class="dock-heading"><div><span>部件抽屉</span><strong id="workshop-category-title">选择行走模块</strong></div><small>点击安装 · 鼠标拖动画面可旋转机体</small></div>
+            <div id="workshop-items" class="workshop-items"></div>
+          </footer>
+
+          <div class="workshop-actions">
+            <div class="preset-status"><span id="workshop-preset-name">我的远征车</span><button id="workshop-save"><i class="ph ph-floppy-disk"></i>保存方案</button><button id="workshop-copy"><i class="ph ph-copy"></i>复制</button></div>
+            <button id="workshop-launch" class="workshop-secondary"><span>直接出发</span></button>
+            <button id="workshop-test" class="workshop-primary"><span>开始试驾</span><i class="ph ph-caret-double-right"></i></button>
+          </div>
+        </section>
 
         <section id="main-menu" class="overlay menu-overlay">
           <div class="menu-topline">
@@ -103,7 +147,7 @@
                 <div><span>当前武器</span><strong id="weapon-label">星脉炮</strong></div>
               </div>
 
-              <button id="start-button" class="primary-button"><span>启动星核引擎</span><small>开始任务</small></button>
+              <button id="start-button" class="primary-button"><span>进入远征工坊</span><small>看天气 · 改装 · 试驾 · 出发</small></button>
               <nav class="menu-nav" aria-label="更多功能">
                 <button data-panel="tech">永久科技树</button>
                 <button data-panel="armory">机体与武器</button>

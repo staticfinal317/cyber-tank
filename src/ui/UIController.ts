@@ -1,9 +1,10 @@
 import { TECH_TREE, WEAPONS } from '../content/weapons';
 import { CHASSIS } from '../content/chassis';
 import { THEME_ORDER, THEMES } from '../content/themes';
-import type { ChassisId, GameOptions, ReplayData, RunSummary, SaveData, ThemeId, WeaponId } from '../core/types';
+import type { ChassisId, GameOptions, LoadoutPreset, ReplayData, RunSummary, SaveData, TankLoadout, ThemeId, WeaponId } from '../core/types';
 import { seedFromDate } from '../core/RNG';
 import type { Simulation } from '../gameplay/Simulation';
+import { WorkshopController } from '../workshop/WorkshopController';
 
 type PanelName = 'tech' | 'armory' | 'leaderboard' | 'replays';
 
@@ -17,6 +18,12 @@ export interface UIActions {
   unlockChassis: (id: ChassisId) => void;
   playReplay: (replay: ReplayData) => void;
   themePreview: (theme: ThemeId) => void;
+  previewWorkshop: (loadout: TankLoadout) => void;
+  closeWorkshop: () => void;
+  saveLoadout: (preset: LoadoutPreset) => void;
+  testDrive: (options: GameOptions) => void;
+  launchLoadout: (options: GameOptions) => void;
+  unlockPart: (category: 'movement' | 'ammo' | 'tool' | 'appearance', id: string, cost: number) => Promise<boolean>;
 }
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -33,15 +40,25 @@ export class UIController {
   private options: GameOptions = { mode: 'adventure', theme: 'neon-city', assist: 'standard', coop: false, weapon: 'pulse', chassis: 'spark' };
   private panel?: PanelName;
   private paused = false;
+  private readonly workshop: WorkshopController;
 
   constructor(private readonly actions: UIActions) {
     this.renderThemes();
+    this.workshop = new WorkshopController({
+      preview: (loadout) => actions.previewWorkshop(loadout),
+      save: (preset) => actions.saveLoadout(preset),
+      testDrive: (loadout) => actions.testDrive(this.optionsWithLoadout(loadout, true)),
+      launch: (loadout) => actions.launchLoadout(this.optionsWithLoadout(loadout, false)),
+      close: () => this.closeWorkshop(),
+      unlock: (category, id, cost) => actions.unlockPart(category, id, cost),
+    });
     this.bind();
     this.updateInputHint();
   }
 
   setSave(save: SaveData): void {
     this.save = save;
+    this.workshop.setSave(save);
     byId('shard-count').textContent = save.starShards.toLocaleString('zh-CN');
     if (!save.unlockedWeapons.includes(this.options.weapon)) this.options.weapon = save.unlockedWeapons[0] ?? 'pulse';
     if (!save.unlockedChassis.includes(this.options.chassis)) this.options.chassis = save.unlockedChassis[0] ?? 'spark';
@@ -50,7 +67,8 @@ export class UIController {
     if (this.panel) this.renderPanel(this.panel);
   }
 
-  showGame(): void {
+  showGame(options?: GameOptions): void {
+    this.workshop.close();
     byId('main-menu').classList.add('is-hidden');
     byId('game-over').classList.add('is-hidden');
     byId('side-panel').classList.add('is-hidden');
@@ -58,10 +76,13 @@ export class UIController {
     byId('pause-button').classList.remove('is-hidden');
     if (matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0) byId('touch-controls').classList.remove('is-hidden');
     byId('p2-status').classList.toggle('is-hidden', !this.options.coop);
+    byId('mission-label').textContent = options?.testDrive ? '20 秒全地形试驾' : '守护星核基地';
+    byId('event-label').textContent = options?.testDrive ? '测试转向、制动和抓地' : `${THEMES[this.options.theme].mechanic}运行中`;
     this.paused = false;
   }
 
   showHome(): void {
+    this.workshop.close();
     byId('main-menu').classList.remove('is-hidden');
     byId('game-over').classList.add('is-hidden');
     byId('pause-overlay').classList.add('is-hidden');
@@ -81,6 +102,13 @@ export class UIController {
     this.toast('轨迹回放', '半透明机体正在重现最近一场移动路线');
   }
 
+  returnToWorkshop(save: SaveData, message?: string): void {
+    byId('hud').classList.add('is-hidden'); byId('touch-controls').classList.add('is-hidden');
+    byId('pause-button').classList.add('is-hidden'); byId('boss-hud').classList.add('is-hidden');
+    this.workshop.open(save);
+    if (message) this.toast('试驾完成', message);
+  }
+
   update(sim: Simulation): void {
     const p1 = sim.players[0]; const p2 = sim.players[1];
     if (p1) {
@@ -92,12 +120,12 @@ export class UIController {
       byId('p2-hp-bar').style.width = `${Math.max(0, p2.hp / p2.maxHp) * 100}%`;
       byId('p2-hp-text').textContent = p2.alive ? `${Math.ceil(p2.hp)} / ${p2.maxHp}` : '等待重建';
     }
-    byId('wave-label').textContent = this.options.mode === 'last-core' ? `安全区 ${sim.safeRadius.toFixed(1)}m` : `第 ${Math.max(1, sim.wave)} 波`;
+    byId('wave-label').textContent = sim.options.testDrive ? `试驾 ${Math.max(0, Math.ceil(20 - sim.elapsed))} 秒` : this.options.mode === 'last-core' ? `安全区 ${sim.safeRadius.toFixed(1)}m` : `第 ${Math.max(1, sim.wave)} 波`;
     byId('score-label').textContent = Math.round(sim.score).toString().padStart(6, '0');
     byId('enemy-label').textContent = `伙伴机 ${sim.enemies.length}`;
     byId('combo-label').textContent = `连击 x${sim.combo}`;
     byId('combo-label').classList.toggle('is-hot', sim.combo >= 3);
-    byId('event-label').textContent = sim.eventKind === 'none' ? `${THEMES[this.options.theme].mechanic}运行中` : this.eventName(sim.eventKind);
+    byId('event-label').textContent = sim.options.testDrive ? '跟随发光路线完成操控检查' : sim.eventKind === 'none' ? `${THEMES[this.options.theme].mechanic}运行中` : this.eventName(sim.eventKind);
     const boss = sim.enemies.find((enemy) => enemy.kind === 'boss');
     byId('boss-hud').classList.toggle('is-hidden', !boss);
     if (boss) {
@@ -148,10 +176,7 @@ export class UIController {
     }));
     byId<HTMLSelectElement>('assist-select').addEventListener('change', (event) => { this.options.assist = (event.target as HTMLSelectElement).value as GameOptions['assist']; });
     byId<HTMLSelectElement>('team-select').addEventListener('change', (event) => { this.options.coop = (event.target as HTMLSelectElement).value === 'coop'; });
-    byId('start-button').addEventListener('click', () => {
-      if (this.options.mode === 'daily') this.options.seed = seedFromDate(); else delete this.options.seed;
-      this.actions.start({ ...this.options });
-    });
+    byId('start-button').addEventListener('click', () => this.openWorkshop());
     document.querySelectorAll<HTMLButtonElement>('[data-panel]').forEach((button) => button.addEventListener('click', () => this.openPanel(button.dataset.panel as PanelName)));
     byId('panel-close').addEventListener('click', () => byId('side-panel').classList.add('is-hidden'));
     byId('restart-button').addEventListener('click', this.actions.restart);
@@ -239,6 +264,25 @@ export class UIController {
 
   private togglePause(paused: boolean): void {
     this.paused = paused; byId('pause-overlay').classList.toggle('is-hidden', !paused); this.actions.pause(paused);
+  }
+
+  private openWorkshop(): void {
+    if (!this.save) return;
+    byId('main-menu').classList.add('is-hidden');
+    byId('side-panel').classList.add('is-hidden');
+    this.workshop.open(this.save);
+  }
+
+  private closeWorkshop(): void {
+    this.workshop.close();
+    this.actions.closeWorkshop();
+    byId('main-menu').classList.remove('is-hidden');
+  }
+
+  private optionsWithLoadout(loadout: TankLoadout, testDrive: boolean): GameOptions {
+    const options: GameOptions = { ...this.options, chassis: loadout.chassis, loadout, testDrive };
+    if (options.mode === 'daily') options.seed = seedFromDate(); else delete options.seed;
+    return options;
   }
 
   private updateInputHint(): void {

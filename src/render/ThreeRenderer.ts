@@ -6,7 +6,8 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { ENEMIES } from '../content/enemies';
 import { THEMES } from '../content/themes';
-import type { ThemeDefinition, Vec2 } from '../core/types';
+import { MOVEMENT_MODULES, PAINTS } from '../content/expedition';
+import type { MovementModuleId, TankLoadout, ThemeDefinition, Vec2 } from '../core/types';
 import type { EnemyEntity, PickupEntity, PlayerEntity, ProjectileEntity, Simulation } from '../gameplay/Simulation';
 
 interface Particle {
@@ -46,6 +47,7 @@ export class ThreeRenderer {
   readonly camera = new THREE.PerspectiveCamera(44, 1, .1, 150);
   readonly renderer: THREE.WebGLRenderer;
   readonly composer: EffectComposer;
+  private readonly bloom: UnrealBloomPass;
   private readonly raycaster = new THREE.Raycaster();
   private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private readonly playerMeshes = new Map<number, THREE.Group>();
@@ -65,6 +67,14 @@ export class ThreeRenderer {
   private replayFrames: import('../core/types').ReplayFrame[] = [];
   private replayStart = 0;
   private replayGhosts: THREE.Group[] = [];
+  private viewMode: 'arena' | 'workshop' = 'arena';
+  private workshopTank?: THREE.Group;
+  private workshopTurntable?: THREE.Group;
+  private workshopArm?: THREE.Group;
+  private workshopAngle = -.5;
+  private workshopRadius = 10.5;
+  private workshopDragging = false;
+  private workshopPointerX = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement, private theme: ThemeDefinition) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
@@ -79,7 +89,7 @@ export class ThreeRenderer {
 
     const renderPass = new RenderPass(this.scene, this.camera);
     const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), .78, .5, .55);
-    bloom.threshold = .74; bloom.strength = .52; bloom.radius = .42;
+    bloom.threshold = .74; bloom.strength = .52; bloom.radius = .42; this.bloom = bloom;
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(renderPass);
     this.composer.addPass(bloom);
@@ -94,10 +104,15 @@ export class ThreeRenderer {
     this.buildWorld(theme);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(canvas.parentElement ?? canvas);
+    canvas.addEventListener('pointerdown', this.onWorkshopPointerDown);
+    canvas.addEventListener('pointermove', this.onWorkshopPointerMove);
+    window.addEventListener('pointerup', this.onWorkshopPointerUp);
+    canvas.addEventListener('wheel', this.onWorkshopWheel, { passive: false });
     this.resize();
   }
 
   setSimulation(simulation: Simulation): void {
+    this.viewMode = 'arena';
     this.simulation = simulation;
     this.stopReplay();
     this.clearEntities();
@@ -132,9 +147,33 @@ export class ThreeRenderer {
   }
 
   setTheme(id: ThemeDefinition['id']): void {
+    this.viewMode = 'arena';
+    this.renderer.toneMappingExposure = .92; this.bloom.threshold = .74; this.bloom.strength = .52; this.bloom.radius = .42;
     this.theme = THEMES[id];
     while (this.world.children.length) this.world.remove(this.world.children[0]!);
     this.buildWorld(this.theme);
+  }
+
+  showWorkshop(loadout: TankLoadout): void {
+    this.simulation = undefined;
+    this.stopReplay();
+    this.clearEntities();
+    this.viewMode = 'workshop';
+    this.renderer.toneMappingExposure = .58; this.bloom.threshold = .88; this.bloom.strength = .26; this.bloom.radius = .28;
+    while (this.world.children.length) this.world.remove(this.world.children[0]!);
+    this.buildWorkshop(loadout);
+  }
+
+  updateWorkshopLoadout(loadout: TankLoadout): void {
+    if (this.viewMode !== 'workshop') return;
+    if (this.workshopTank) this.entityRoot.remove(this.workshopTank);
+    this.workshopTank = this.createTank(1, loadout);
+    this.workshopTank.scale.setScalar(1.72);
+    this.workshopTank.position.set(-.55, .48, .1);
+    this.workshopTank.rotation.y = .72;
+    const tankBuddy = this.workshopTank.userData.companion as THREE.Group | undefined; if (tankBuddy) tankBuddy.visible = false;
+    this.entityRoot.add(this.workshopTank);
+    this.playInstallFeedback(loadout.movement);
   }
 
   render(dt: number): void {
@@ -146,8 +185,18 @@ export class ThreeRenderer {
     this.shakePower = Math.max(0, this.shakePower - dt * 3.8);
     const x = (Math.random() - .5) * shake;
     const y = (Math.random() - .5) * shake * .5;
-    this.camera.position.set(x, 20.5 + y, 18.5 + y);
-    this.camera.lookAt(this.cameraTarget.x + x * .25, this.cameraTarget.y, this.cameraTarget.z + y * .2);
+    if (this.viewMode === 'workshop') {
+      const wx = Math.sin(this.workshopAngle) * this.workshopRadius;
+      const wz = Math.cos(this.workshopAngle) * this.workshopRadius;
+      this.camera.position.set(wx, 4.4, wz);
+      this.camera.lookAt(-.35, 1.78, .2);
+      if (this.workshopTurntable) this.workshopTurntable.rotation.y += dt * .08;
+      if (this.workshopTank && !this.workshopDragging) this.workshopTank.rotation.y += dt * .07;
+      if (this.workshopArm) this.workshopArm.rotation.y = -.6 + Math.sin(this.elapsed * .85) * .08;
+    } else {
+      this.camera.position.set(x, 20.5 + y, 18.5 + y);
+      this.camera.lookAt(this.cameraTarget.x + x * .25, this.cameraTarget.y, this.cameraTarget.z + y * .2);
+    }
     this.world.rotation.y = Math.sin(this.elapsed * .09) * .002;
     this.composer.render();
   }
@@ -252,6 +301,90 @@ export class ThreeRenderer {
     this.world.add(this.safeZone);
   }
 
+  private buildWorkshop(loadout: TankLoadout): void {
+    this.scene.background = new THREE.Color(0x4d8fa8);
+    this.scene.fog = new THREE.FogExp2(0x5d9bab, .013);
+    const hemi = new THREE.HemisphereLight(0xc8efff, 0x172116, 1.05);
+    const sun = new THREE.DirectionalLight(0xfff0ca, 1.75); sun.position.set(-8, 14, 10); sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    const cyan = new THREE.PointLight(0x32ddff, 4.8, 16, 2); cyan.position.set(-1, 4, 2);
+    this.world.add(hemi, sun, cyan);
+
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(34, 24), new THREE.MeshStandardMaterial({ color: 0x0a151f, metalness: .72, roughness: .34 }));
+    floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; this.world.add(floor);
+    const hangar = material(0x101b24, 0x142c38, .2, .52);
+    const beams = [[-8, 4, 0, .45, 8, 18], [8, 4, 0, .45, 8, 18], [0, 7.7, -3, 16, .42, .55]];
+    beams.forEach(([x, y, z, w, h, d]) => { const beam = new THREE.Mesh(new THREE.BoxGeometry(w!, h!, d!), hangar); beam.position.set(x!, y!, z!); beam.castShadow = true; this.world.add(beam); });
+
+    // Layered mountain-and-sea destination visible through the hangar mouth.
+    const skyWall = new THREE.Mesh(new THREE.PlaneGeometry(30, 12), new THREE.MeshBasicMaterial({ color: 0x79bed2, fog: false }));
+    skyWall.position.set(0, 5.4, -11.8); this.world.add(skyWall);
+    const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(1.1, 48), new THREE.MeshBasicMaterial({ color: 0xffefba, transparent: true, opacity: .92, fog: false }));
+    sunDisc.position.set(6.5, 7.5, -11.65); this.world.add(sunDisc);
+    const water = new THREE.Mesh(new THREE.PlaneGeometry(30, 18, 16, 16), new THREE.MeshPhysicalMaterial({ color: 0x2aa5bd, emissive: 0x073f51, emissiveIntensity: .12, roughness: .18, metalness: .1, transparent: true, opacity: .94 }));
+    water.rotation.x = -Math.PI / 2; water.position.set(0, -.12, -14); this.world.add(water);
+    const mountainMat = material(0x4e8d65, 0x102d2a, .06, .9);
+    for (let i = 0; i < 11; i += 1) {
+      const height = 3.2 + (i % 4) * 1.2;
+      const mountain = new THREE.Mesh(new THREE.ConeGeometry(2.2 + (i % 3) * .6, height, 7), mountainMat);
+      mountain.position.set(-14 + i * 2.8, height / 2 - .35, -9.8 - Math.abs(5 - i) * .28); mountain.rotation.y = i * .37; this.world.add(mountain);
+    }
+    const cliffMat = material(0x355f49, 0x17392d, .08, .82);
+    const cliff = new THREE.Mesh(new THREE.BoxGeometry(3.2, 4.8, 1.5), cliffMat); cliff.position.set(4.7, 2.15, -8.8); cliff.rotation.z = -.08; this.world.add(cliff);
+    const waterfall = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 4.15, 1, 10), new THREE.MeshBasicMaterial({ color: 0xbdf7ff, transparent: true, opacity: .82, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
+    waterfall.position.set(4.25, 2.35, -7.98); waterfall.rotation.z = -.08; this.world.add(waterfall);
+    const treeTrunkMat = material(0x5a3c26, 0x1d100b, .04, .9); const leafMat = material(0x6dbb69, 0x244d31, .1, .8); const blossomMat = material(0xffacd0, 0x7d294e, .14, .78);
+    for (let i = 0; i < 14; i += 1) {
+      const tree = new THREE.Group(); const trunk = new THREE.Mesh(new THREE.CylinderGeometry(.08, .12, .75, 7), treeTrunkMat); trunk.position.y = .37; tree.add(trunk);
+      const crown = new THREE.Mesh(new THREE.IcosahedronGeometry(.38 + (i % 3) * .06, 1), i % 3 === 0 ? blossomMat : leafMat); crown.position.y = .88; crown.scale.set(1.2, .95, 1); tree.add(crown);
+      tree.position.set(-9 + (i * 1.55) % 18, .1, -7.3 - (i % 3) * .75); this.world.add(tree);
+    }
+    const petalMat = new THREE.MeshBasicMaterial({ color: 0xffb6d2, transparent: true, opacity: .8 });
+    for (let i = 0; i < 32; i += 1) { const petal = new THREE.Mesh(new THREE.SphereGeometry(.035, 5, 4), petalMat); petal.scale.set(2, .25, 1); petal.position.set(-8 + Math.random() * 16, .5 + Math.random() * 6, -3 - Math.random() * 14); petal.userData.baseY = petal.position.y; this.world.add(petal); }
+
+    const platform = new THREE.Group();
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(3.55, 3.8, .38, 64), material(0x17242e, 0x18bddc, .36, .25)); disc.position.y = .18; disc.receiveShadow = true; platform.add(disc);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(3.25, .08, 8, 64), new THREE.MeshBasicMaterial({ color: 0x41eaff })); ring.rotation.x = Math.PI / 2; ring.position.y = .4; platform.add(ring);
+    this.workshopTurntable = platform; this.world.add(platform);
+
+    this.workshopArm = this.createWorkshopArm(); this.workshopArm.position.set(3.5, .2, .8); this.world.add(this.workshopArm);
+    this.workshopTank = this.createTank(1, loadout); this.workshopTank.scale.setScalar(1.72); this.workshopTank.position.set(-.55, .48, .1); this.workshopTank.rotation.y = .72; this.entityRoot.add(this.workshopTank);
+    const tankBuddy = this.workshopTank.userData.companion as THREE.Group | undefined; if (tankBuddy) tankBuddy.visible = false;
+    const workshopBuddy = this.createWorkshopBuddy(); workshopBuddy.position.set(-3.35, .42, 1.1); workshopBuddy.rotation.y = .35; this.world.add(workshopBuddy);
+  }
+
+  private createWorkshopArm(): THREE.Group {
+    const root = new THREE.Group(); const yellow = material(0xffc928, 0xffa818, .85, .3); const dark = material(0x15212a, 0x18cbe8, .18, .45);
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(.65, .8, .38, 16), dark); base.position.y = .2; root.add(base);
+    const shoulder = new THREE.Mesh(new THREE.SphereGeometry(.42, 12, 8), yellow); shoulder.position.y = 1.1; root.add(shoulder);
+    const lower = roundedBox(.34, 2.1, .42, .13, yellow); lower.position.set(0, 2, 0); lower.rotation.z = -.34; root.add(lower);
+    const elbow = new THREE.Mesh(new THREE.SphereGeometry(.34, 12, 8), dark); elbow.position.set(.68, 2.95, 0); root.add(elbow);
+    const upper = roundedBox(.28, 1.6, .34, .1, yellow); upper.position.set(1.18, 3.55, 0); upper.rotation.z = -.8; root.add(upper);
+    const tool = new THREE.Mesh(new THREE.TorusGeometry(.32, .08, 8, 24), new THREE.MeshBasicMaterial({ color: 0x40e9ff })); tool.position.set(1.74, 4.05, 0); tool.rotation.y = Math.PI / 2; root.add(tool);
+    return root;
+  }
+
+  private createWorkshopBuddy(): THREE.Group {
+    const root = new THREE.Group(); const shell = material(0xe8f4f4, 0x35e8ff, .18, .35); const yellow = material(0xffc928, 0xffa818, .38, .3); const dark = material(0x0c1721, 0x173545, .16, .38); const cyan = material(0x56efff, 0x35e8ff, 1.2, .2);
+    const body = roundedBox(.72, .62, .62, .2, shell); body.position.y = .68; root.add(body);
+    const face = roundedBox(.53, .07, .34, .12, dark); face.position.set(0, .73, .325); root.add(face);
+    for (const x of [-.13, .13]) { const eye = new THREE.Mesh(new THREE.SphereGeometry(.045, 10, 7), cyan); eye.position.set(x, .77, .37); root.add(eye); }
+    const antenna = new THREE.Mesh(new THREE.CylinderGeometry(.025, .025, .34, 7), yellow); antenna.position.set(.17, 1.12, 0); antenna.rotation.z = -.28; root.add(antenna);
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(.075, 10, 7), cyan); tip.position.set(.22, 1.28, 0); root.add(tip);
+    for (const x of [-.22, .22]) { const foot = roundedBox(.18, .16, .28, .06, yellow); foot.position.set(x, .13, .03); root.add(foot); const arm = new THREE.Mesh(new THREE.CapsuleGeometry(.055, .28, 4, 8), shell); arm.position.set(x * 1.48, .64, 0); arm.rotation.z = x > 0 ? -.35 : .35; root.add(arm); }
+    return root;
+  }
+
+  private playInstallFeedback(movement: MovementModuleId): void {
+    const color = MOVEMENT_MODULES[movement].color;
+    for (let i = 0; i < 16; i += 1) {
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(.035, 5, 4), new THREE.MeshBasicMaterial({ color, blending: THREE.AdditiveBlending }));
+      mesh.position.set(.8, 1.15, .2); this.effectRoot.add(mesh);
+      const angle = i / 16 * Math.PI * 2; const maxLife = .45 + Math.random() * .25;
+      this.particles.push({ mesh, velocity: new THREE.Vector3(Math.cos(angle) * (1.2 + Math.random()), Math.random() * 2.4, Math.sin(angle) * (1.2 + Math.random())), life: maxLife, maxLife, spin: new THREE.Vector3() });
+    }
+  }
+
   private addThemeProps(theme: ThemeDefinition): void {
     const propMat = material(theme.primary, theme.primary, .75, .42);
     const accentMat = material(theme.accent, theme.accent, 1.1, .28);
@@ -279,7 +412,7 @@ export class ThreeRenderer {
   }
 
   private sync(sim: Simulation): void {
-    this.syncCollection(sim.players, this.playerMeshes, (entity) => this.createTank(entity.slot));
+    this.syncCollection(sim.players, this.playerMeshes, (entity) => this.createTank(entity.slot, sim.options.loadout));
     this.syncCollection(sim.enemies, this.enemyMeshes, (entity) => this.createEnemy(entity));
     this.syncCollection(sim.projectiles, this.bulletMeshes, (entity) => this.createBullet(entity));
     this.syncCollection(sim.pickups, this.pickupMeshes, (entity) => this.createPickup(entity));
@@ -342,16 +475,20 @@ export class ThreeRenderer {
     });
   }
 
-  private createTank(slot: 1 | 2): THREE.Group {
+  private createTank(slot: 1 | 2, loadout?: TankLoadout): THREE.Group {
     const group = new THREE.Group();
     group.scale.setScalar(1.22);
-    const bodyMat = material(slot === 1 ? 0xffd84a : 0x6ff2ff, slot === 1 ? 0xffb422 : 0x28dfff, 1.15);
+    const bodyColor = loadout ? PAINTS[loadout.paint].color : slot === 1 ? 0xffd84a : 0x6ff2ff;
+    const bodyMat = material(bodyColor, bodyColor, loadout ? .38 : 1.15);
     const darkMat = material(0x101b29, slot === 1 ? 0xffd84a : 0x5eeaff, .28, .5);
-    const cyan = material(0x9af8ff, 0x20dfff, 1.8, .22);
+    const cyan = material(0x9af8ff, 0x20dfff, loadout ? .62 : 1.8, .22);
     const body = roundedBox(1.35, .5, 1.75, .24, bodyMat); body.position.y = .46; group.add(body);
-    for (const x of [-.78, .78]) {
-      const track = roundedBox(.32, .42, 1.9, .13, darkMat); track.position.set(x, .3, 0); group.add(track);
-      for (let z = -.6; z <= .6; z += .4) { const light = new THREE.Mesh(new THREE.BoxGeometry(.08, .12, .2), cyan); light.position.set(x * 1.02, .28, z); group.add(light); }
+    this.addMovementModule(group, loadout?.movement ?? 'snow-tread', darkMat, cyan);
+    if (loadout) {
+      const sideRail = roundedBox(1.5, .16, .34, .07, darkMat); sideRail.position.set(0, .56, .52); group.add(sideRail);
+      for (const x of [-.46, 0, .46]) { const panel = roundedBox(.34, .09, .42, .06, bodyMat); panel.position.set(x, .75, .28); panel.rotation.y = -.08 * x; group.add(panel); }
+      for (const x of [-.46, .46]) { const lamp = new THREE.Mesh(new THREE.BoxGeometry(.24, .12, .08), cyan); lamp.position.set(x, .58, -.89); group.add(lamp); }
+      const rearCore = new THREE.Mesh(new THREE.BoxGeometry(.58, .22, .08), cyan); rearCore.position.set(0, .6, .9); group.add(rearCore);
     }
     const turret = new THREE.Group(); turret.position.y = .65;
     const dome = new THREE.Mesh(new THREE.CylinderGeometry(.48, .58, .32, 8), darkMat); dome.position.y = .22; dome.castShadow = true; turret.add(dome);
@@ -370,6 +507,39 @@ export class ThreeRenderer {
     const buddyRing = new THREE.Mesh(new THREE.TorusGeometry(.27, .025, 5, 20), new THREE.MeshBasicMaterial({ color: slot === 1 ? 0xffd84a : 0x54edff })); buddyRing.rotation.x = Math.PI / 2; companion.add(buddyRing); group.add(companion);
     group.userData.turret = turret; group.userData.shield = shield; group.userData.companion = companion;
     return group;
+  }
+
+  private addMovementModule(group: THREE.Group, id: MovementModuleId, darkMat: THREE.Material, glowMat: THREE.Material): void {
+    const wheelMat = material(MOVEMENT_MODULES[id].color, MOVEMENT_MODULES[id].color, id === 'amphibious' ? .72 : .24, .44);
+    if (id === 'snow-tread') {
+      for (const x of [-.78, .78]) {
+        const track = roundedBox(.34, .44, 1.95, .14, darkMat); track.position.set(x, .3, 0); group.add(track);
+        for (let z = -.62; z <= .62; z += .4) { const cleat = new THREE.Mesh(new THREE.BoxGeometry(.09, .13, .22), glowMat); cleat.position.set(x * 1.02, .28, z); group.add(cleat); }
+      }
+      return;
+    }
+    const zPositions = id === 'road-wheel' ? [-.62, .62] : [-.7, 0, .7];
+    for (const x of [-.77, .77]) {
+      zPositions.forEach((z) => {
+        const radius = id === 'sand-float' ? .39 : id === 'amphibious' ? .36 : .33;
+        const width = id === 'sand-float' ? .3 : .23;
+        const wheel = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, width, id === 'all-terrain' ? 10 : 20), darkMat);
+        wheel.rotation.z = Math.PI / 2; wheel.position.set(x, .31, z); wheel.castShadow = true; group.add(wheel);
+        const hub = new THREE.Mesh(new THREE.TorusGeometry(radius * .62, id === 'amphibious' ? .075 : .04, 8, 24), wheelMat);
+        hub.rotation.y = Math.PI / 2; hub.position.set(x + Math.sign(x) * (width / 2 + .01), .31, z); group.add(hub);
+        if (id === 'amphibious') {
+          const outer = new THREE.Mesh(new THREE.TorusGeometry(radius * .88, .045, 7, 24), darkMat); outer.rotation.y = Math.PI / 2; outer.position.copy(hub.position); group.add(outer);
+          for (let n = 0; n < 10; n += 1) { const lug = new THREE.Mesh(new THREE.BoxGeometry(.06, .055, .11), darkMat); const a = n / 10 * Math.PI * 2; lug.position.set(hub.position.x, .31 + Math.sin(a) * radius, z + Math.cos(a) * radius); lug.rotation.x = a; group.add(lug); }
+        }
+        if (id === 'all-terrain') {
+          for (let n = 0; n < 8; n += 1) { const lug = new THREE.Mesh(new THREE.BoxGeometry(.08, .07, .12), wheelMat); const a = n / 8 * Math.PI * 2; lug.position.set(x, .31 + Math.sin(a) * (radius + .02), z + Math.cos(a) * (radius + .02)); lug.rotation.x = a; group.add(lug); }
+        }
+      });
+    }
+    if (id === 'amphibious') {
+      const underGlow = new THREE.Mesh(new THREE.RingGeometry(.78, 1.18, 40), new THREE.MeshBasicMaterial({ color: 0x35e8ff, transparent: true, opacity: .32, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
+      underGlow.rotation.x = -Math.PI / 2; underGlow.position.y = .08; group.add(underGlow);
+    }
   }
 
   private createEnemy(enemy: EnemyEntity): THREE.Group {
@@ -442,6 +612,25 @@ export class ThreeRenderer {
     if (p2 && frame.p2x !== undefined && frame.p2z !== undefined) p2.position.set(frame.p2x, 0, frame.p2z);
   }
 
+  private onWorkshopPointerDown = (event: PointerEvent): void => {
+    if (this.viewMode !== 'workshop') return;
+    this.workshopDragging = true; this.workshopPointerX = event.clientX;
+    this.canvas.setPointerCapture?.(event.pointerId);
+  };
+
+  private onWorkshopPointerMove = (event: PointerEvent): void => {
+    if (!this.workshopDragging || this.viewMode !== 'workshop') return;
+    const dx = event.clientX - this.workshopPointerX; this.workshopPointerX = event.clientX;
+    this.workshopAngle -= dx * .006;
+  };
+
+  private onWorkshopPointerUp = (): void => { this.workshopDragging = false; };
+
+  private onWorkshopWheel = (event: WheelEvent): void => {
+    if (this.viewMode !== 'workshop') return;
+    event.preventDefault(); this.workshopRadius = THREE.MathUtils.clamp(this.workshopRadius + event.deltaY * .008, 7.8, 13.5);
+  };
+
   private resize(): void {
     const parent = this.canvas.parentElement;
     const width = Math.max(1, parent?.clientWidth ?? window.innerWidth);
@@ -449,7 +638,7 @@ export class ThreeRenderer {
     this.camera.aspect = width / height;
     const compact = width / height < .78;
     this.camera.fov = compact ? 56 : 44;
-    this.camera.position.z = compact ? 21 : 18.5;
+    if (this.viewMode !== 'workshop') this.camera.position.z = compact ? 21 : 18.5;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height, false);
     this.composer.setSize(width, height);

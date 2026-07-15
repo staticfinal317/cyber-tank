@@ -1,3 +1,4 @@
+import './icons.css';
 import './styles.css';
 import { Game } from './core/Game';
 

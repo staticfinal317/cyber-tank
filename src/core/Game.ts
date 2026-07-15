@@ -3,7 +3,7 @@ import { TECH_TREE, WEAPONS } from '../content/weapons';
 import { CHASSIS } from '../content/chassis';
 import { ACHIEVEMENTS } from '../content/achievements';
 import { THEMES } from '../content/themes';
-import type { ChassisId, GameOptions, ReplayData, RunSummary, SaveData, ThemeId, WeaponId } from './types';
+import type { AmmoId, ChassisId, GameOptions, LoadoutPreset, MovementModuleId, PaintId, ReplayData, RunSummary, SaveData, TankLoadout, ThemeId, ToolId, WeaponId } from './types';
 import { Simulation } from '../gameplay/Simulation';
 import { InputManager } from '../input/InputManager';
 import { LocalSaveRepository } from '../persistence/LocalSaveRepository';
@@ -22,6 +22,7 @@ export class Game {
   private lastTime = performance.now();
   private paused = false;
   private resultHandled = false;
+  private workshopActive = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new ThreeRenderer(canvas, THEMES['neon-city']);
@@ -37,6 +38,12 @@ export class Game {
       unlockChassis: (id) => void this.unlockChassis(id),
       playReplay: (replay) => this.playReplay(replay),
       themePreview: (theme) => this.previewTheme(theme),
+      previewWorkshop: (loadout) => this.previewWorkshop(loadout),
+      closeWorkshop: () => this.closeWorkshop(),
+      saveLoadout: (preset) => void this.saveLoadout(preset),
+      testDrive: (options) => this.start(options),
+      launchLoadout: (options) => this.start(options),
+      unlockPart: (category, id, cost) => this.unlockPart(category, id, cost),
     });
   }
 
@@ -52,11 +59,12 @@ export class Game {
     this.lastOptions = options;
     this.resultHandled = false;
     this.paused = false;
+    this.workshopActive = false;
     this.renderer.setTheme(options.theme);
     this.simulation = new Simulation(options, this.save.techRanks);
     this.renderer.setSimulation(this.simulation);
     this.bindSimulation(this.simulation);
-    this.ui.showGame();
+    this.ui.showGame(options);
   }
 
   private restart(): void { if (this.lastOptions) this.start({ ...this.lastOptions }); }
@@ -66,10 +74,43 @@ export class Game {
     this.paused = false;
     this.renderer.clearSimulation();
     this.renderer.stopReplay();
+    this.workshopActive = false;
+    this.renderer.setTheme(this.lastOptions?.theme ?? 'neon-city');
     this.ui.showHome();
   }
 
   private previewTheme(theme: ThemeId): void { if (!this.simulation) this.renderer.setTheme(theme); }
+
+  private previewWorkshop(loadout: TankLoadout): void {
+    if (this.workshopActive) this.renderer.updateWorkshopLoadout(loadout);
+    else { this.renderer.showWorkshop(loadout); this.workshopActive = true; }
+  }
+
+  private closeWorkshop(): void {
+    this.workshopActive = false;
+    this.renderer.setTheme(this.lastOptions?.theme ?? 'neon-city');
+  }
+
+  private async saveLoadout(preset: LoadoutPreset): Promise<void> {
+    const index = this.save.loadoutPresets.findIndex((item) => item.id === preset.id);
+    if (index >= 0) this.save.loadoutPresets[index] = preset;
+    else this.save.loadoutPresets = [...this.save.loadoutPresets, preset].slice(0, 3);
+    this.save.activePresetId = preset.id;
+    await this.repo.save(this.save);
+    this.ui.setSave(this.save);
+    this.ui.toast('方案已保存', `${preset.name}已经准备好出发`);
+  }
+
+  private async unlockPart(category: 'movement' | 'ammo' | 'tool' | 'appearance', id: string, cost: number): Promise<boolean> {
+    if (this.save.starShards < cost) { this.ui.toast('还差一点星屑', '完成远征与每日挑战就能继续解锁'); return false; }
+    this.save.starShards -= cost;
+    if (category === 'movement' && !this.save.unlockedMovementModules.includes(id as MovementModuleId)) this.save.unlockedMovementModules.push(id as MovementModuleId);
+    if (category === 'ammo' && !this.save.unlockedAmmo.includes(id as AmmoId)) this.save.unlockedAmmo.push(id as AmmoId);
+    if (category === 'tool' && !this.save.unlockedTools.includes(id as ToolId)) this.save.unlockedTools.push(id as ToolId);
+    if (category === 'appearance' && !this.save.unlockedPaints.includes(id as PaintId)) this.save.unlockedPaints.push(id as PaintId);
+    await this.repo.save(this.save); this.ui.setSave(this.save); this.ui.toast('新部件已解锁', '现在可以安装到任意装配方案');
+    return true;
+  }
 
   private playReplay(replay: ReplayData): void {
     this.simulation = undefined;
@@ -196,6 +237,11 @@ export class Game {
       if (p1) this.input.setPlayerWorld(p1.pos);
       sim.update(dt, [this.input.frame(1), this.input.frame(2)]);
       this.ui.update(sim);
+      if (sim.options.testDrive && sim.elapsed >= 20) {
+        const movement = sim.options.loadout?.movement;
+        this.simulation = undefined; this.renderer.clearSimulation(); this.workshopActive = false;
+        this.ui.returnToWorkshop(this.save, movement === 'amphibious' ? '浮航环稳定展开，水陆切换测试通过！' : '转向、制动与抓地测试全部通过！');
+      }
       if (sim.options.mode === 'adventure' && sim.elapsed >= 480 && !this.resultHandled) {
         sim.over = true;
         void this.finishRun(sim);

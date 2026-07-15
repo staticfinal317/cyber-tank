@@ -1,9 +1,10 @@
 import { ENEMIES, availableEnemyKinds } from '../content/enemies';
 import { WEAPONS } from '../content/weapons';
+import { AMMO_STRATEGIES, MOVEMENT_STRATEGIES } from './LoadoutStrategies';
 import { RNG } from '../core/RNG';
 import type {
-  AbilityId, AssistLevel, ChassisId, EnemyKind, GameMode, GameOptions,
-  ReplayFrame, ThemeId, Vec2, WeaponId,
+  AbilityId, AmmoId, AssistLevel, ChassisId, EnemyKind, GameMode, GameOptions,
+  ReplayFrame, SurfaceId, ThemeId, Vec2, WeaponId,
 } from '../core/types';
 
 export interface ControlFrame {
@@ -11,6 +12,7 @@ export interface ControlFrame {
   aim: Vec2;
   firing: boolean;
   abilities: ReadonlySet<AbilityId>;
+  switchAmmo: boolean;
 }
 
 export interface PlayerEntity {
@@ -31,6 +33,7 @@ export interface PlayerEntity {
   weapon: WeaponId;
   chassis: ChassisId;
   abilityCooldowns: Record<AbilityId, number>;
+  activeAmmoIndex: 0 | 1;
 }
 
 export interface EnemyEntity {
@@ -59,6 +62,8 @@ export interface ProjectileEntity {
   color: number;
   pierce: number;
   owner: number;
+  ammo?: AmmoId;
+  bounces: number;
 }
 
 export interface PickupEntity {
@@ -153,8 +158,10 @@ export class Simulation {
     return {
       id: this.nextId++, slot, pos, vel: { x: 0, z: 0 }, aim: { x: 0, z: -1 }, hp, maxHp: hp,
       radius: .78, cooldown: 0, shield: 0, boost: 0, invulnerable: 1.5, alive: true, downTimer: 0,
-      weapon: this.options.weapon, chassis: this.options.chassis,
+      weapon: this.options.loadout ? AMMO_STRATEGIES[this.options.loadout.ammoSlots[this.options.loadout.activeAmmoIndex]].weapon : this.options.weapon,
+      chassis: this.options.loadout?.chassis ?? this.options.chassis,
       abilityCooldowns: { shield: 0, repair: 0, dash: 0, storm: 0 },
+      activeAmmoIndex: this.options.loadout?.activeAmmoIndex ?? 0,
     };
   }
 
@@ -180,7 +187,7 @@ export class Simulation {
 
   private updatePlayers(dt: number, controls: ControlFrame[]): void {
     this.players.forEach((player, index) => {
-      const control = controls[index] ?? { move: { x: 0, z: 0 }, aim: player.aim, firing: false, abilities: new Set<AbilityId>() };
+      const control = controls[index] ?? { move: { x: 0, z: 0 }, aim: player.aim, firing: false, abilities: new Set<AbilityId>(), switchAmmo: false };
       if (!player.alive) {
         player.downTimer -= dt;
         const helper = this.players.find((other) => other.alive && distance(other.pos, player.pos) < 2.3);
@@ -193,6 +200,11 @@ export class Simulation {
       }
 
       player.cooldown -= dt;
+      if (control.switchAmmo && this.options.loadout) {
+        player.activeAmmoIndex = player.activeAmmoIndex === 0 ? 1 : 0;
+        player.weapon = AMMO_STRATEGIES[this.options.loadout.ammoSlots[player.activeAmmoIndex]].weapon;
+        this.emit('message', { title: '炮弹切换', body: player.activeAmmoIndex === 0 ? '主炮已就绪' : '副炮已就绪' });
+      }
       player.shield -= dt;
       player.boost -= dt;
       player.invulnerable -= dt;
@@ -203,9 +215,13 @@ export class Simulation {
 
       const move = len(control.move) > 1 ? normalized(control.move) : control.move;
       const baseSpeed = player.chassis === 'comet' ? 6.3 : player.chassis === 'guardian' ? 4.5 : 5.4;
+      const movement = this.options.loadout ? MOVEMENT_STRATEGIES[this.options.loadout.movement] : undefined;
+      const surface = this.currentSurface();
+      const movementBoost = movement ? movement.speed * movement.grip(surface) : 1;
       let speed = baseSpeed * (1 + (this.techRanks.engine ?? 0) * .04) * (player.boost > 0 ? 1.65 : 1);
+      speed *= movementBoost;
       if (this.options.theme === 'neon-city' && Math.abs(player.pos.x) < 1.2) speed *= 1.18;
-      const response = this.options.theme === 'aurora-ice' ? 3.8 : 11;
+      const response = (this.options.theme === 'aurora-ice' ? 3.8 : 11) * (movement?.response ?? 1);
       player.vel.x += (move.x * speed - player.vel.x) * Math.min(1, response * dt);
       player.vel.z += (move.z * speed - player.vel.z) * Math.min(1, response * dt);
       if (this.options.theme === 'toy-factory' && Math.abs(player.pos.z) < 2.2) player.vel.x += Math.sin(this.elapsed * .8) * dt * 3;
@@ -232,18 +248,21 @@ export class Simulation {
 
   private firePlayer(player: PlayerEntity): void {
     const weapon = WEAPONS[player.weapon];
+    const ammoId = this.options.loadout?.ammoSlots[player.activeAmmoIndex];
+    const ammo = ammoId ? AMMO_STRATEGIES[ammoId] : undefined;
     const rapid = this.rapidTimer > 0 ? .56 : 1;
     player.cooldown = weapon.cooldown * rapid * (1 - (this.techRanks.cooling ?? 0) * .04);
     const pelletCount = weapon.pellets + (this.multiTimer > 0 ? 2 : 0);
-    const damage = weapon.damage * (1 + (this.techRanks.power ?? 0) * .05) * (this.powerTimer > 0 ? 1.6 : 1);
+    const damage = weapon.damage * (ammo?.damage ?? 1) * (1 + (this.techRanks.power ?? 0) * .05) * (this.powerTimer > 0 ? 1.6 : 1);
     for (let i = 0; i < pelletCount; i += 1) {
       const offset = (i - (pelletCount - 1) / 2) * weapon.spread;
       const c = Math.cos(offset); const s = Math.sin(offset);
       const dir = { x: player.aim.x * c - player.aim.z * s, z: player.aim.x * s + player.aim.z * c };
       const projectile: ProjectileEntity = {
         id: this.nextId++, team: 'player', pos: { x: player.pos.x + dir.x, z: player.pos.z + dir.z },
-        prev: { ...player.pos }, vel: { x: dir.x * weapon.speed, z: dir.z * weapon.speed }, radius: .15,
-        damage, life: 1.5, color: weapon.color, pierce: player.weapon === 'rail' ? 3 : 0, owner: player.id,
+        prev: { ...player.pos }, vel: { x: dir.x * weapon.speed * (ammo?.speed ?? 1), z: dir.z * weapon.speed * (ammo?.speed ?? 1) }, radius: .15,
+        damage, life: 1.8, color: ammo?.color ?? weapon.color, pierce: ammo?.pierce ?? (player.weapon === 'rail' ? 3 : 0), owner: player.id,
+        ammo: ammoId, bounces: ammo?.bounces ?? 0,
       };
       this.projectiles.push(projectile);
       this.emit('shot', { player, projectile });
@@ -283,6 +302,7 @@ export class Simulation {
       const def = ENEMIES[enemy.kind];
       let desired = toTarget;
       let speed = def.speed * (1 + this.wave * .018);
+      if (enemy.marked > 0) speed *= .56;
       if (enemy.kind === 'gunner' || enemy.kind === 'sniper' || enemy.kind === 'medic') {
         const d = distance(enemy.pos, target.pos);
         const preferred = enemy.kind === 'sniper' ? 9 : 6;
@@ -315,7 +335,7 @@ export class Simulation {
       this.projectiles.push({
         id: this.nextId++, team: 'enemy', pos: { ...enemy.pos }, prev: { ...enemy.pos },
         vel: { x: shotDir.x * 8.3, z: shotDir.z * 8.3 }, radius: .18, damage,
-        life: 2.5, color: ENEMIES[enemy.kind].color, pierce: 0, owner: enemy.id,
+        life: 2.5, color: ENEMIES[enemy.kind].color, pierce: 0, owner: enemy.id, bounces: 0,
       });
     }
   }
@@ -328,7 +348,13 @@ export class Simulation {
       bullet.prev = { ...bullet.pos };
       bullet.pos.x += bullet.vel.x * dt;
       bullet.pos.z += bullet.vel.z * dt;
-      if (bullet.life <= 0 || Math.abs(bullet.pos.x) > ARENA_X + 3 || Math.abs(bullet.pos.z) > ARENA_Z + 3) this.projectiles.splice(i, 1);
+      const outsideX = Math.abs(bullet.pos.x) > ARENA_X + 1;
+      const outsideZ = Math.abs(bullet.pos.z) > ARENA_Z + 1;
+      if ((outsideX || outsideZ) && bullet.bounces > 0) {
+        if (outsideX) { bullet.vel.x *= -1; bullet.pos.x = clamp(bullet.pos.x, -ARENA_X, ARENA_X); }
+        if (outsideZ) { bullet.vel.z *= -1; bullet.pos.z = clamp(bullet.pos.z, -ARENA_Z, ARENA_Z); }
+        bullet.bounces -= 1;
+      } else if (bullet.life <= 0 || Math.abs(bullet.pos.x) > ARENA_X + 3 || Math.abs(bullet.pos.z) > ARENA_Z + 3) this.projectiles.splice(i, 1);
     }
   }
 
@@ -342,6 +368,15 @@ export class Simulation {
           const enemy = this.enemies[targetIndex];
           if (!enemy) continue;
           enemy.hp -= bullet.damage; enemy.hitFlash = .12;
+          if (bullet.ammo === 'frost' || bullet.ammo === 'seed-core') enemy.marked = bullet.ammo === 'frost' ? 2.8 : 1.4;
+          if (bullet.ammo === 'repair-seed' || bullet.ammo === 'seed-core') {
+            const owner = this.players.find((player) => player.id === bullet.owner);
+            if (owner) owner.hp = Math.min(owner.maxHp, owner.hp + (bullet.ammo === 'repair-seed' ? 6 : 2));
+          }
+          if (bullet.ammo === 'chain-lightning') {
+            const chained = this.enemies.find((other) => other !== enemy && distance(other.pos, enemy.pos) < 3.4);
+            if (chained) { chained.hp -= bullet.damage * .55; chained.hitFlash = .1; this.emit('hit', { pos: chained.pos, color: bullet.color, heavy: false }); }
+          }
           this.emit('hit', { pos: bullet.pos, color: bullet.color, heavy: bullet.damage > 40 });
           this.emit('damage', { pos: enemy.pos, value: Math.round(bullet.damage), critical: bullet.damage > 40 });
           if (bullet.pierce > 0) bullet.pierce -= 1; else this.projectiles.splice(bi, 1);
@@ -364,6 +399,14 @@ export class Simulation {
         }
       });
     });
+  }
+
+  private currentSurface(): SurfaceId {
+    if (this.options.theme === 'cloud-garden') return 'mud';
+    if (this.options.theme === 'crystal-ocean') return 'shallow-water';
+    if (this.options.theme === 'dino-canyon') return 'sand';
+    if (this.options.theme === 'aurora-ice') return 'ice';
+    return 'road';
   }
 
   private damagePlayer(player: PlayerEntity, amount: number, feedback: boolean): void {
@@ -416,6 +459,7 @@ export class Simulation {
   }
 
   private updateWaves(dt: number): void {
+    if (this.options.testDrive) return;
     if (this.enemies.length > 0) return;
     this.nextWaveTimer -= dt;
     if (this.nextWaveTimer > 0) return;
