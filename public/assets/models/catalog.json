@@ -1,28 +1,28 @@
 {
   "player-tank": {
-    "url": "/assets/models/cyber-tank-balanced.glb",
+    "url": "./assets/models/cyber-tank-balanced.glb",
     "lod": {
-      "high": "/assets/models/cyber-tank-high.glb",
-      "balanced": "/assets/models/cyber-tank-balanced.glb",
-      "battery": "/assets/models/cyber-tank-low.glb"
+      "high": "./assets/models/cyber-tank-high.glb",
+      "balanced": "./assets/models/cyber-tank-balanced.glb",
+      "battery": "./assets/models/cyber-tank-low.glb"
     },
     "scale": 1.05,
     "offset": [0, 0, 0],
     "rotationY": 0
   },
   "enemy-boss": {
-    "url": "/assets/models/region-boss-balanced.glb",
+    "url": "./assets/models/region-boss-balanced.glb",
     "lod": {
-      "high": "/assets/models/region-boss-high.glb",
-      "balanced": "/assets/models/region-boss-balanced.glb",
-      "battery": "/assets/models/region-boss-low.glb"
+      "high": "./assets/models/region-boss-high.glb",
+      "balanced": "./assets/models/region-boss-balanced.glb",
+      "battery": "./assets/models/region-boss-low.glb"
     },
     "scale": 1,
     "offset": [0, 0, 0],
     "rotationY": 0
   },
   "workshop-prop": {
-    "url": "/assets/models/star-beacon.glb",
+    "url": "./assets/models/star-beacon.glb",
     "scale": 1,
     "offset": [0, 0, 0],
     "rotationY": 0

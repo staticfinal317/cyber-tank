@@ -13,6 +13,13 @@ function readGlb(name) {
 }
 
 describe('self-developed glTF/PBR model pipeline', () => {
+  it('keeps catalog URLs portable for sub-path deployments', () => {
+    const catalog = JSON.parse(readFileSync(resolve('public/assets/models/catalog.json'), 'utf8'));
+    const urls = Object.values(catalog).flatMap((spec) => [spec.url, ...Object.values(spec.lod ?? {})]);
+    expect(urls.length).toBeGreaterThan(0);
+    expect(urls.every((url) => url.startsWith('./assets/models/'))).toBe(true);
+  });
+
   it('generates valid compact GLB containers with traceable metadata', () => {
     for (const file of ['cyber-tank-high.glb', 'cyber-tank-balanced.glb', 'cyber-tank-low.glb', 'region-boss-high.glb', 'star-beacon.glb']) {
       const { json, size } = readGlb(file);

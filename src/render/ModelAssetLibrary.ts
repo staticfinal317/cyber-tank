@@ -27,7 +27,7 @@ export class ModelAssetLibrary {
   private quality: RenderQuality = 'balanced';
   private revision = 0;
 
-  loadCatalog(url = '/assets/models/catalog.json'): Promise<void> {
+  loadCatalog(url = './assets/models/catalog.json'): Promise<void> {
     this.catalogReady = this.fetchCatalog(url);
     return this.catalogReady;
   }
