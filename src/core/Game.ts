@@ -28,6 +28,7 @@ export class Game {
   private workshopSeason?: SeasonId;
   private performance = new PerformanceGovernor('auto');
   private performanceHudClock = 0;
+  private ambienceClock = 0;
   private simulationAccumulator = 0;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -66,14 +67,20 @@ export class Game {
 
   private start(options: GameOptions): void {
     this.audio.unlock();
+    if (options.biome === 'mountain-sea-valley' && options.season) this.audio.setExpeditionAmbience(options.season, SEASONS[options.season].weather);
+    else this.audio.stopAmbience();
     this.lastOptions = options;
     this.resultHandled = false;
     this.paused = false;
     this.workshopActive = false;
+    this.audio.stopAmbience();
     this.simulationAccumulator = 0;
     if (options.biome === 'mountain-sea-valley') this.renderer.setExpeditionSeason(options.season ?? 'spring');
     else this.renderer.setTheme(options.theme);
     this.simulation = new Simulation(options, this.save.techRanks);
+    if (import.meta.env.DEV && document.body.classList.contains('force-touch')) {
+      this.simulation.players.forEach((player) => { player.invulnerable = 3600; });
+    }
     this.renderer.setSimulation(this.simulation);
     this.bindSimulation(this.simulation);
     this.ui.showGame(options);
@@ -94,6 +101,7 @@ export class Game {
   private previewTheme(theme: ThemeId): void { if (!this.simulation) this.renderer.setTheme(theme); }
 
   private previewWorkshop(loadout: TankLoadout, season: SeasonId): void {
+    this.audio.setExpeditionAmbience(season, SEASONS[season].weather);
     if (this.workshopActive && this.workshopSeason === season) this.renderer.updateWorkshopLoadout(loadout);
     else { this.renderer.showWorkshop(loadout, season); this.workshopActive = true; this.workshopSeason = season; }
   }
@@ -101,6 +109,7 @@ export class Game {
   private closeWorkshop(): void {
     this.workshopActive = false;
     this.workshopSeason = undefined;
+    this.audio.stopAmbience();
     this.renderer.setTheme(this.lastOptions?.theme ?? 'neon-city');
   }
 
@@ -134,6 +143,7 @@ export class Game {
 
   private playReplay(replay: ReplayData): void {
     this.simulation = undefined;
+    this.audio.stopAmbience();
     this.renderer.setTheme(replay.options.theme);
     this.renderer.startReplay(replay.frames);
     this.ui.showReplay();
@@ -161,7 +171,7 @@ export class Game {
       this.ui.toast('强化芯片', pickupName(kind));
     });
     sim.on('playerHit', ({ player }) => { this.renderer.burst(player.pos, 0xff5d75, false); this.audio.hit(false); this.input.rumble(player.slot, .58, 120); });
-    sim.on('ability', ({ player, ability }) => { this.renderer.ability(player.pos, abilityColor(ability)); this.audio.ability(); this.input.rumble(player.slot, ability === 'storm' ? .8 : .38, ability === 'storm' ? 180 : 80); });
+    sim.on('ability', ({ player, ability, pos }) => { this.renderer.ability(pos, abilityColor(ability)); this.audio.ability(); this.input.rumble(player.slot, ability === 'storm' ? .8 : .38, ability === 'storm' ? 180 : 80); });
     sim.on('wave', ({ wave, boss }) => {
       this.audio.wave();
       this.ui.toast(
@@ -276,6 +286,8 @@ export class Game {
     if (this.performanceHudClock <= 0) { this.performanceHudClock = .75; this.ui.updatePerformance(this.performance.level, this.performance.fps); }
     const sim = this.simulation;
     if (sim && !this.paused && !sim.over) {
+      this.ambienceClock -= dt;
+      if (this.ambienceClock <= 0) { this.ambienceClock = .2; this.audio.updateAmbience(sim.weather.intensity, sim.weather.warning || sim.eventKind === 'lightning'); }
       const p1 = sim.players[0];
       if (p1) this.input.setPlayerWorld(p1.pos);
       this.simulationAccumulator = Math.min(.1, this.simulationAccumulator + dt);

@@ -80,7 +80,7 @@ export class UIController {
     byId('side-panel').classList.add('is-hidden');
     byId('hud').classList.remove('is-hidden');
     byId('pause-button').classList.remove('is-hidden');
-    if (matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0) byId('touch-controls').classList.remove('is-hidden');
+    if (document.body.classList.contains('force-touch') || matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0) byId('touch-controls').classList.remove('is-hidden');
     byId('p2-status').classList.toggle('is-hidden', !this.options.coop);
     const mission = options?.missionId ? EXPEDITION_MISSIONS[options.missionId] : undefined;
     byId('mission-label').textContent = options?.testDrive ? `20 秒${SEASONS[options.season ?? 'spring'].name}试驾` : mission?.name ?? '守护星核基地';

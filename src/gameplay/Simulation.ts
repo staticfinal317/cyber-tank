@@ -3,6 +3,7 @@ import { WEAPONS } from '../content/weapons';
 import { AMMO_STRATEGIES, MOVEMENT_STRATEGIES } from './LoadoutStrategies';
 import { missionProgress, surfaceAt, weatherAt, type WeatherState } from './ExpeditionRules';
 import { RNG } from '../core/RNG';
+import { SpatialHash } from './SpatialHash';
 import type {
   AbilityId, AmmoId, AssistLevel, BossVariant, ChassisId, EnemyKind, ExpeditionMissionId, GameMode, GameOptions,
   ReplayFrame, SurfaceId, ThemeId, Vec2, WeaponId,
@@ -13,6 +14,7 @@ export interface ControlFrame {
   aim: Vec2;
   firing: boolean;
   abilities: ReadonlySet<AbilityId>;
+  abilityTargets?: ReadonlyMap<AbilityId, Vec2>;
   switchAmmo: boolean;
 }
 
@@ -85,7 +87,7 @@ export interface SimulationEvents {
   damage: { pos: Vec2; value: number; critical: boolean };
   pickup: { pos: Vec2; kind: PickupEntity['kind'] };
   playerHit: { player: PlayerEntity; damage: number };
-  ability: { player: PlayerEntity; ability: AbilityId };
+  ability: { player: PlayerEntity; ability: AbilityId; pos: Vec2 };
   wave: { wave: number; boss: boolean };
   event: { kind: WorldEventKind; message: string };
   mission: { missionId: ExpeditionMissionId };
@@ -141,6 +143,11 @@ export class Simulation {
   private replayClock = 0;
   private listeners = new Map<keyof SimulationEvents, Set<(payload: unknown) => void>>();
   private techRanks: Record<string, number>;
+  private readonly enemyIndex = new SpatialHash<EnemyEntity>(3.2);
+  private readonly playerIndex = new SpatialHash<PlayerEntity>(3.2);
+  private readonly projectilePool: ProjectileEntity[] = [];
+
+  get pooledProjectileCount(): number { return this.projectilePool.length; }
 
   constructor(options: GameOptions, techRanks: Record<string, number> = {}) {
     this.options = options;
@@ -186,10 +193,12 @@ export class Simulation {
     this.multiTimer -= step;
     this.powerTimer -= step;
     this.updateWorldEvent(step);
+    this.rebuildSpatialIndexes();
     this.updatePlayers(step, controls);
     this.updateEnemies(step);
     this.updateProjectiles(step);
     this.updatePickups(step);
+    this.rebuildSpatialIndexes();
     this.handleCollisions();
     this.updateWaves(step);
     this.updateMission();
@@ -199,7 +208,7 @@ export class Simulation {
 
   private updatePlayers(dt: number, controls: ControlFrame[]): void {
     this.players.forEach((player, index) => {
-      const control = controls[index] ?? { move: { x: 0, z: 0 }, aim: player.aim, firing: false, abilities: new Set<AbilityId>(), switchAmmo: false };
+      const control = controls[index] ?? { move: { x: 0, z: 0 }, aim: player.aim, firing: false, abilities: new Set<AbilityId>(), abilityTargets: new Map<AbilityId, Vec2>(), switchAmmo: false };
       if (!player.alive) {
         player.downTimer -= dt;
         const helper = this.players.find((other) => other.alive && distance(other.pos, player.pos) < 2.3);
@@ -255,7 +264,7 @@ export class Simulation {
       player.aim = aim;
       const autoFire = this.options.assist === 'easy' && Boolean(autoTarget);
       if ((control.firing || autoFire) && player.cooldown <= 0) this.firePlayer(player);
-      control.abilities.forEach((ability) => this.useAbility(player, ability));
+      control.abilities.forEach((ability) => this.useAbility(player, ability, control.abilityTargets?.get(ability)));
 
       if (this.options.mode === 'last-core' && len(player.pos) > this.safeRadius && player.invulnerable <= 0) {
         this.damagePlayer(player, 5 * dt, false);
@@ -279,18 +288,18 @@ export class Simulation {
       const offset = (i - (pelletCount - 1) / 2) * weapon.spread;
       const c = Math.cos(offset); const s = Math.sin(offset);
       const dir = { x: player.aim.x * c - player.aim.z * s, z: player.aim.x * s + player.aim.z * c };
-      const projectile: ProjectileEntity = {
-        id: this.nextId++, team: 'player', pos: { x: player.pos.x + dir.x, z: player.pos.z + dir.z },
+      const projectile = this.acquireProjectile({
+        team: 'player', pos: { x: player.pos.x + dir.x, z: player.pos.z + dir.z },
         prev: { ...player.pos }, vel: { x: dir.x * weapon.speed * (ammo?.speed ?? 1), z: dir.z * weapon.speed * (ammo?.speed ?? 1) }, radius: .15,
         damage, life: 1.8, color: ammo?.color ?? weapon.color, pierce: ammo?.pierce ?? (player.weapon === 'rail' ? 3 : 0), owner: player.id,
         ammo: ammoId, bounces: ammo?.bounces ?? 0,
-      };
+      });
       this.projectiles.push(projectile);
       this.emit('shot', { player, projectile });
     }
   }
 
-  private useAbility(player: PlayerEntity, ability: AbilityId): void {
+  private useAbility(player: PlayerEntity, ability: AbilityId, target?: Vec2): void {
     if (player.abilityCooldowns[ability] > 0 || !player.alive) return;
     player.abilityCooldowns[ability] = ABILITY_BASE[ability];
     if (ability === 'shield') { player.shield = 5; player.invulnerable = 1; }
@@ -299,16 +308,25 @@ export class Simulation {
       const down = this.players.find((other) => !other.alive && distance(other.pos, player.pos) < 5);
       if (down) down.downTimer = 0;
     }
-    if (ability === 'dash') { player.boost = 2.6; player.invulnerable = .45; }
+    let effectPos = { ...player.pos };
+    if (ability === 'dash') {
+      const direction = normalized(target ?? player.aim, player.aim);
+      player.aim = direction;
+      player.vel.x += direction.x * 5.8; player.vel.z += direction.z * 5.8;
+      player.boost = 2.6; player.invulnerable = .45;
+      effectPos = { x: player.pos.x + direction.x * 1.8, z: player.pos.z + direction.z * 1.8 };
+    }
     if (ability === 'storm') {
+      const direction = normalized(target ?? player.aim, player.aim);
+      effectPos = target ? { x: clamp(player.pos.x + direction.x * 5.2, -ARENA_X, ARENA_X), z: clamp(player.pos.z + direction.z * 5.2, -ARENA_Z, ARENA_Z) } : { ...player.pos };
       this.enemies.forEach((enemy) => {
-        if (distance(enemy.pos, player.pos) < 7) {
+        if (distance(enemy.pos, effectPos) < (target ? 4.5 : 7)) {
           enemy.hp -= 65; enemy.marked = .7;
           this.emit('damage', { pos: enemy.pos, value: 65, critical: true });
         }
       });
     }
-    this.emit('ability', { player, ability });
+    this.emit('ability', { player, ability, pos: effectPos });
   }
 
   private updateEnemies(dt: number): void {
@@ -354,11 +372,11 @@ export class Simulation {
       const c = Math.cos(offset); const s = Math.sin(offset);
       const base = enemy.bossVariant === 'tide-leviathan' ? { x: 0, z: -1 } : dir;
       const shotDir = { x: base.x * c - base.z * s, z: base.x * s + base.z * c };
-      this.projectiles.push({
-        id: this.nextId++, team: 'enemy', pos: { ...enemy.pos }, prev: { ...enemy.pos },
+      this.projectiles.push(this.acquireProjectile({
+        team: 'enemy', pos: { ...enemy.pos }, prev: { ...enemy.pos },
         vel: { x: shotDir.x * 8.3, z: shotDir.z * 8.3 }, radius: .18, damage,
         life: 2.5, color: ENEMIES[enemy.kind].color, pierce: 0, owner: enemy.id, bounces: 0,
-      });
+      }));
     }
   }
 
@@ -367,7 +385,7 @@ export class Simulation {
       const bullet = this.projectiles[i];
       if (!bullet) continue;
       bullet.life -= dt;
-      bullet.prev = { ...bullet.pos };
+      bullet.prev.x = bullet.pos.x; bullet.prev.z = bullet.pos.z;
       bullet.pos.x += bullet.vel.x * dt;
       bullet.pos.z += bullet.vel.z * dt;
       const outsideX = Math.abs(bullet.pos.x) > ARENA_X + 1;
@@ -376,7 +394,7 @@ export class Simulation {
         if (outsideX) { bullet.vel.x *= -1; bullet.pos.x = clamp(bullet.pos.x, -ARENA_X, ARENA_X); }
         if (outsideZ) { bullet.vel.z *= -1; bullet.pos.z = clamp(bullet.pos.z, -ARENA_Z, ARENA_Z); }
         bullet.bounces -= 1;
-      } else if (bullet.life <= 0 || Math.abs(bullet.pos.x) > ARENA_X + 3 || Math.abs(bullet.pos.z) > ARENA_Z + 3) this.projectiles.splice(i, 1);
+      } else if (bullet.life <= 0 || Math.abs(bullet.pos.x) > ARENA_X + 3 || Math.abs(bullet.pos.z) > ARENA_Z + 3) this.releaseProjectileAt(i);
     }
   }
 
@@ -385,7 +403,8 @@ export class Simulation {
       const bullet = this.projectiles[bi];
       if (!bullet) continue;
       if (bullet.team === 'player') {
-        const targetIndex = this.enemies.findIndex((enemy) => distance(bullet.pos, enemy.pos) < bullet.radius + enemy.radius);
+        const target = this.enemyIndex.query(bullet.pos, 2.8).find((enemy) => distance(bullet.pos, enemy.pos) < bullet.radius + enemy.radius);
+        const targetIndex = target ? this.enemies.indexOf(target) : -1;
         if (targetIndex >= 0) {
           const enemy = this.enemies[targetIndex];
           if (!enemy) continue;
@@ -396,21 +415,21 @@ export class Simulation {
             if (owner) owner.hp = Math.min(owner.maxHp, owner.hp + (bullet.ammo === 'repair-seed' ? 6 : 2));
           }
           if (bullet.ammo === 'chain-lightning') {
-            const chained = this.enemies.find((other) => other !== enemy && distance(other.pos, enemy.pos) < 3.4);
+            const chained = this.enemyIndex.query(enemy.pos, 3.4).find((other) => other !== enemy);
             if (chained) { chained.hp -= bullet.damage * .55; chained.hitFlash = .1; this.emit('hit', { pos: chained.pos, color: bullet.color, heavy: false }); }
           }
           this.emit('hit', { pos: bullet.pos, color: bullet.color, heavy: bullet.damage > 40 });
           this.emit('damage', { pos: enemy.pos, value: Math.round(bullet.damage), critical: bullet.damage > 40 });
-          if (bullet.pierce > 0) bullet.pierce -= 1; else this.projectiles.splice(bi, 1);
+          if (bullet.pierce > 0) bullet.pierce -= 1; else this.releaseProjectileAt(bi);
         }
       } else {
-        const target = this.players.find((player) => player.alive && distance(bullet.pos, player.pos) < bullet.radius + player.radius);
-        if (target) { this.damagePlayer(target, bullet.damage, true); this.projectiles.splice(bi, 1); }
+        const target = this.playerIndex.query(bullet.pos, 2).find((player) => player.alive && distance(bullet.pos, player.pos) < bullet.radius + player.radius);
+        if (target) { this.damagePlayer(target, bullet.damage, true); this.releaseProjectileAt(bi); }
       }
     }
 
     this.enemies.forEach((enemy) => {
-      this.players.forEach((player) => {
+      this.playerIndex.query(enemy.pos, enemy.radius + 1.2).forEach((player) => {
         if (!player.alive) return;
         const d = distance(enemy.pos, player.pos);
         if (d < enemy.radius + player.radius) {
@@ -572,13 +591,34 @@ export class Simulation {
   }
 
   private nearestPlayer(pos: Vec2): PlayerEntity | undefined {
-    return this.players.filter((p) => p.alive).sort((a, b) => distance(a.pos, pos) - distance(b.pos, pos))[0];
+    return this.playerIndex.nearest(pos, 36, (player) => player.alive);
   }
 
   private nearestEnemy(pos: Vec2, maxDistance: number): EnemyEntity | undefined {
-    return this.enemies
-      .filter((enemy) => distance(enemy.pos, pos) <= maxDistance)
-      .sort((a, b) => distance(a.pos, pos) - distance(b.pos, pos))[0];
+    return this.enemyIndex.nearest(pos, maxDistance);
+  }
+
+  private rebuildSpatialIndexes(): void {
+    this.enemyIndex.rebuild(this.enemies);
+    this.playerIndex.rebuild(this.players);
+  }
+
+  private acquireProjectile(data: Omit<ProjectileEntity, 'id'>): ProjectileEntity {
+    const projectile = this.projectilePool.pop();
+    if (!projectile) return { id: this.nextId++, ...data };
+    projectile.id = this.nextId++; projectile.team = data.team;
+    projectile.pos.x = data.pos.x; projectile.pos.z = data.pos.z;
+    projectile.prev.x = data.prev.x; projectile.prev.z = data.prev.z;
+    projectile.vel.x = data.vel.x; projectile.vel.z = data.vel.z;
+    projectile.radius = data.radius; projectile.damage = data.damage; projectile.life = data.life;
+    projectile.color = data.color; projectile.pierce = data.pierce; projectile.owner = data.owner;
+    projectile.ammo = data.ammo; projectile.bounces = data.bounces;
+    return projectile;
+  }
+
+  private releaseProjectileAt(index: number): void {
+    const [projectile] = this.projectiles.splice(index, 1);
+    if (projectile && this.projectilePool.length < 192) this.projectilePool.push(projectile);
   }
 
   private recordReplay(dt: number): void {

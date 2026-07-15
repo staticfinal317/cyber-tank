@@ -4,12 +4,14 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { ENEMIES } from '../content/enemies';
 import { THEMES } from '../content/themes';
 import { MOVEMENT_MODULES, PAINTS, SEASONS } from '../content/expedition';
 import type { MovementModuleId, SeasonId, TankLoadout, ThemeDefinition, Vec2 } from '../core/types';
 import type { EnemyEntity, PickupEntity, PlayerEntity, ProjectileEntity, Simulation } from '../gameplay/Simulation';
 import type { RenderQuality } from '../platform/PerformanceGovernor';
+import { ModelAssetLibrary, type ModelAssetSpec, type ModelSlot } from './ModelAssetLibrary';
 
 interface Particle {
   mesh: THREE.Mesh;
@@ -21,8 +23,11 @@ interface Particle {
 
 interface TrailMark { mesh: THREE.Mesh; life: number; maxLife: number; expanding: boolean }
 
-function material(color: number, emissive = color, intensity = .65, roughness = .32): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({ color, emissive, emissiveIntensity: intensity, roughness, metalness: .7 });
+function material(color: number, emissive = color, intensity = .65, roughness = .32): THREE.MeshPhysicalMaterial {
+  return new THREE.MeshPhysicalMaterial({
+    color, emissive, emissiveIntensity: intensity, roughness, metalness: .72,
+    clearcoat: .42, clearcoatRoughness: .24, sheen: .08, sheenColor: new THREE.Color(color), envMapIntensity: 1.15,
+  });
 }
 
 function roundedBox(width: number, height: number, depth: number, radius: number, mat: THREE.Material): THREE.Mesh {
@@ -84,6 +89,7 @@ export class ThreeRenderer {
   private weatherParticles: THREE.Mesh[] = [];
   private quality: RenderQuality = 'balanced';
   private particleBudget = 160;
+  private readonly modelAssets = new ModelAssetLibrary();
 
   constructor(private readonly canvas: HTMLCanvasElement, private theme: ThemeDefinition) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
@@ -93,6 +99,10 @@ export class ThreeRenderer {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = .92;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const room = new RoomEnvironment();
+    this.scene.environment = pmrem.fromScene(room, .04).texture;
+    room.dispose(); pmrem.dispose();
     this.camera.position.set(0, 20.5, 18.5);
     this.camera.lookAt(this.cameraTarget);
 
@@ -118,7 +128,10 @@ export class ThreeRenderer {
     window.addEventListener('pointerup', this.onWorkshopPointerUp);
     canvas.addEventListener('wheel', this.onWorkshopWheel, { passive: false });
     this.resize();
+    void this.modelAssets.loadCatalog();
   }
+
+  registerModelAsset(slot: ModelSlot, spec: ModelAssetSpec): void { this.modelAssets.register(slot, spec); }
 
   setSimulation(simulation: Simulation): void {
     this.viewMode = 'arena';
@@ -614,23 +627,24 @@ export class ThreeRenderer {
   private createTank(slot: 1 | 2, loadout?: TankLoadout): THREE.Group {
     const group = new THREE.Group();
     group.scale.setScalar(1.22);
+    const visualRoot = new THREE.Group(); group.add(visualRoot);
     const bodyColor = loadout ? PAINTS[loadout.paint].color : slot === 1 ? 0xffd84a : 0x6ff2ff;
     const bodyMat = material(bodyColor, bodyColor, loadout ? .38 : 1.15);
     const darkMat = material(0x101b29, slot === 1 ? 0xffd84a : 0x5eeaff, .28, .5);
     const cyan = material(0x9af8ff, 0x20dfff, loadout ? .62 : 1.8, .22);
-    const body = roundedBox(1.35, .5, 1.75, .24, bodyMat); body.position.y = .46; group.add(body);
-    this.addMovementModule(group, loadout?.movement ?? 'snow-tread', darkMat, cyan);
+    const body = roundedBox(1.35, .5, 1.75, .24, bodyMat); body.position.y = .46; visualRoot.add(body);
+    this.addMovementModule(visualRoot, loadout?.movement ?? 'snow-tread', darkMat, cyan);
     if (loadout) {
-      const sideRail = roundedBox(1.5, .16, .34, .07, darkMat); sideRail.position.set(0, .56, .52); group.add(sideRail);
-      for (const x of [-.46, 0, .46]) { const panel = roundedBox(.34, .09, .42, .06, bodyMat); panel.position.set(x, .75, .28); panel.rotation.y = -.08 * x; group.add(panel); }
-      for (const x of [-.46, .46]) { const lamp = new THREE.Mesh(new THREE.BoxGeometry(.24, .12, .08), cyan); lamp.position.set(x, .58, -.89); group.add(lamp); }
-      const rearCore = new THREE.Mesh(new THREE.BoxGeometry(.58, .22, .08), cyan); rearCore.position.set(0, .6, .9); group.add(rearCore);
+      const sideRail = roundedBox(1.5, .16, .34, .07, darkMat); sideRail.position.set(0, .56, .52); visualRoot.add(sideRail);
+      for (const x of [-.46, 0, .46]) { const panel = roundedBox(.34, .09, .42, .06, bodyMat); panel.position.set(x, .75, .28); panel.rotation.y = -.08 * x; visualRoot.add(panel); }
+      for (const x of [-.46, .46]) { const lamp = new THREE.Mesh(new THREE.BoxGeometry(.24, .12, .08), cyan); lamp.position.set(x, .58, -.89); visualRoot.add(lamp); }
+      const rearCore = new THREE.Mesh(new THREE.BoxGeometry(.58, .22, .08), cyan); rearCore.position.set(0, .6, .9); visualRoot.add(rearCore);
     }
     const turret = new THREE.Group(); turret.position.y = .65;
     const dome = new THREE.Mesh(new THREE.CylinderGeometry(.48, .58, .32, 8), darkMat); dome.position.y = .22; dome.castShadow = true; turret.add(dome);
     const barrel = new THREE.Mesh(new THREE.BoxGeometry(.18, .18, 1.3), cyan); barrel.position.set(0, .27, -.65); turret.add(barrel);
     const muzzle = new THREE.Mesh(new THREE.BoxGeometry(.3, .29, .25), bodyMat); muzzle.position.set(0, .27, -1.27); turret.add(muzzle);
-    group.add(turret);
+    visualRoot.add(turret);
     const shield = new THREE.Mesh(
       new THREE.SphereGeometry(1.22, 20, 12),
       new THREE.MeshBasicMaterial({ color: slot === 1 ? 0x5ef3ff : 0xffee87, wireframe: true, transparent: true, opacity: .25, blending: THREE.AdditiveBlending }),
@@ -642,7 +656,17 @@ export class ThreeRenderer {
     const buddyCore = new THREE.Mesh(new THREE.OctahedronGeometry(.18, 0), cyan); companion.add(buddyCore);
     const buddyRing = new THREE.Mesh(new THREE.TorusGeometry(.27, .025, 5, 20), new THREE.MeshBasicMaterial({ color: slot === 1 ? 0xffd84a : 0x54edff })); buddyRing.rotation.x = Math.PI / 2; companion.add(buddyRing); group.add(companion);
     group.userData.turret = turret; group.userData.shield = shield; group.userData.companion = companion;
+    void this.attachOptionalModel(group, visualRoot, 'player-tank');
     return group;
+  }
+
+  private async attachOptionalModel(group: THREE.Group, proceduralRoot: THREE.Group, slot: ModelSlot): Promise<void> {
+    const model = await this.modelAssets.instantiate(slot); if (!model) return;
+    proceduralRoot.children.forEach((child) => { child.visible = false; });
+    proceduralRoot.add(model);
+    const namedTurret = model.getObjectByName('CYBER_TURRET');
+    if (namedTurret) group.userData.turret = namedTurret;
+    group.userData.externalModel = true;
   }
 
   private addMovementModule(group: THREE.Group, id: MovementModuleId, darkMat: THREE.Material, glowMat: THREE.Material): void {

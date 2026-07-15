@@ -9,6 +9,7 @@ const ZERO: Vec2 = { x: 0, z: 0 };
 export class InputManager {
   private keys = new Set<string>();
   private pressedAbilities = new Set<AbilityId>();
+  private pressedAbilityTargets = new Map<AbilityId, Vec2>();
   private ammoSwitchPressed = false;
   private padSwitchHeld = [false, false];
   private padSlots: Array<number | undefined> = [undefined, undefined];
@@ -54,11 +55,16 @@ export class InputManager {
   frame(slot: 1 | 2): ControlFrame {
     const gamepad = this.readGamepad(slot - 1);
     if (slot === 2) {
+      const abilityTargets = new Map<AbilityId, Vec2>();
+      gamepad.abilities.forEach((ability) => {
+        if ((ability === 'dash' || ability === 'storm') && (gamepad.aim.x || gamepad.aim.z)) abilityTargets.set(ability, gamepad.aim);
+      });
       return {
         move: gamepad.move.x || gamepad.move.z ? gamepad.move : this.keyboardVector('KeyJ', 'KeyL', 'KeyI', 'KeyK'),
         aim: gamepad.aim.x || gamepad.aim.z ? gamepad.aim : { x: 0, z: -1 },
         firing: gamepad.firing || this.keys.has('Enter'),
         abilities: gamepad.abilities,
+        abilityTargets,
         switchAmmo: gamepad.switchAmmo,
       };
     }
@@ -70,10 +76,15 @@ export class InputManager {
     const aim = this.touchFiring ? this.touchAim
       : gamepad.aim.x || gamepad.aim.z ? gamepad.aim : mouseAim;
     const abilities = new Set<AbilityId>([...this.pressedAbilities, ...gamepad.abilities]);
+    const abilityTargets = new Map(this.pressedAbilityTargets);
+    gamepad.abilities.forEach((ability) => {
+      if ((ability === 'dash' || ability === 'storm') && (gamepad.aim.x || gamepad.aim.z)) abilityTargets.set(ability, gamepad.aim);
+    });
     const switchAmmo = this.ammoSwitchPressed || gamepad.switchAmmo;
     this.pressedAbilities.clear();
+    this.pressedAbilityTargets.clear();
     this.ammoSwitchPressed = false;
-    return { move, aim, firing: this.touchFiring || this.mouse.active || this.keys.has('Space') || gamepad.firing, abilities, switchAmmo };
+    return { move, aim, firing: this.touchFiring || this.mouse.active || this.keys.has('Space') || gamepad.firing, abilities, abilityTargets, switchAmmo };
   }
 
   private keyboardVector(left: string, right: string, up: string, down: string, left2?: string, right2?: string, up2?: string, down2?: string): Vec2 {
@@ -163,15 +174,64 @@ export class InputManager {
     fire?.addEventListener('pointerup', endFire);
     fire?.addEventListener('pointercancel', endFire);
 
+    const touchControls = document.querySelector<HTMLElement>('#touch-controls');
+    const cancelZone = document.querySelector<HTMLElement>('#ability-cancel-zone');
+    const gestureFeedback = document.querySelector<HTMLElement>('#ability-gesture-feedback');
     document.querySelectorAll<HTMLElement>('[data-ability]').forEach((button) => {
+      let abilityPointer = -1;
+      let origin = { x: 0, y: 0 };
+      let target: Vec2 | undefined;
+      let cancelled = false;
+      const updateAbilityDrag = (event: PointerEvent) => {
+        if (event.pointerId !== abilityPointer) return;
+        const dx = event.clientX - origin.x;
+        const dy = event.clientY - origin.y;
+        const length = Math.hypot(dx, dy);
+        target = length > 12 ? { x: dx / length, z: dy / length } : undefined;
+        const cancelBox = cancelZone?.getBoundingClientRect();
+        cancelled = Boolean(cancelBox && event.clientX >= cancelBox.left && event.clientX <= cancelBox.right && event.clientY >= cancelBox.top && event.clientY <= cancelBox.bottom);
+        cancelZone?.classList.toggle('is-hovered', cancelled);
+        button.classList.toggle('is-dragging', length > 12);
+        touchControls?.style.setProperty('--skill-x', `${event.clientX}px`);
+        touchControls?.style.setProperty('--skill-y', `${event.clientY}px`);
+        touchControls?.style.setProperty('--skill-angle', `${Math.atan2(dy, dx)}rad`);
+        touchControls?.style.setProperty('--skill-distance', `${Math.min(118, length)}px`);
+      };
       button.addEventListener('pointerdown', (event) => {
         event.preventDefault();
-        this.pressedAbilities.add(button.dataset.ability as AbilityId);
+        if (button.classList.contains('is-cooling')) return;
+        abilityPointer = event.pointerId;
+        const box = button.getBoundingClientRect();
+        origin = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+        target = undefined; cancelled = false;
+        button.setPointerCapture(event.pointerId);
         button.classList.add('is-pressed');
-        this.haptic(24);
+        touchControls?.classList.add('is-targeting-ability');
+        gestureFeedback?.classList.add('is-visible');
+        updateAbilityDrag(event);
+        this.haptic(16);
       });
-      button.addEventListener('pointerup', () => button.classList.remove('is-pressed'));
-      button.addEventListener('pointercancel', () => button.classList.remove('is-pressed'));
+      button.addEventListener('pointermove', updateAbilityDrag);
+      const finishAbility = (event: PointerEvent, forceCancel = false) => {
+        if (event.pointerId !== abilityPointer) return;
+        const ability = button.dataset.ability as AbilityId;
+        updateAbilityDrag(event);
+        if (!forceCancel && !cancelled) {
+          this.pressedAbilities.add(ability);
+          if (target && (ability === 'dash' || ability === 'storm')) this.pressedAbilityTargets.set(ability, target);
+          this.haptic(ability === 'storm' ? 38 : 24);
+        } else this.haptic(10);
+        abilityPointer = -1;
+        button.classList.remove('is-pressed', 'is-dragging');
+        touchControls?.classList.remove('is-targeting-ability');
+        cancelZone?.classList.remove('is-hovered');
+        gestureFeedback?.classList.remove('is-visible');
+      };
+      button.addEventListener('pointerup', (event) => finishAbility(event));
+      button.addEventListener('pointercancel', (event) => finishAbility(event, true));
+      // Some mobile browsers transfer capture during OS gestures; window fallbacks prevent a stuck targeting state.
+      window.addEventListener('pointerup', (event) => finishAbility(event));
+      window.addEventListener('pointercancel', (event) => finishAbility(event, true));
     });
     document.querySelector<HTMLElement>('[data-control="ammo-switch"]')?.addEventListener('pointerdown', (event) => { event.preventDefault(); this.ammoSwitchPressed = true; this.haptic(18); });
   }

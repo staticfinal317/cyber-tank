@@ -102,6 +102,14 @@ button:focus-visible, select:focus-visible { outline: 3px solid var(--yellow); o
 .replay-exit { left: 50%; bottom: calc(var(--safe-bottom) + 10px); transform: translateX(-50%); padding: 0 18px; color: var(--cyan); }
 
 .touch-controls { position: absolute; z-index: 9; inset: 0; pointer-events: none; }
+.ability-cancel-zone { position: absolute; z-index: 2; top: calc(var(--safe-top) + 112px); right: calc(var(--safe-right) + 18px); width: 94px; height: 94px; display: grid; place-items: center; align-content: center; gap: 2px; border: 1px solid rgba(255,91,117,.42); border-radius: 50%; color: #ff9aaa; background: rgba(42,8,18,.72); box-shadow: 0 0 0 10px rgba(255,91,117,.03), inset 0 0 28px rgba(255,91,117,.12); opacity: 0; transform: scale(.7); transition: opacity .16s ease, transform .22s cubic-bezier(.2,.9,.2,1.15), background .12s ease; }
+.ability-cancel-zone b { font-size: 1.75rem; line-height: .9; }.ability-cancel-zone span { font-size: .62rem; font-weight: 900; letter-spacing: .08em; }
+.is-targeting-ability .ability-cancel-zone { opacity: 1; transform: scale(1); }.ability-cancel-zone.is-hovered { color: white; border-color: #ff5b75; background: rgba(127,13,42,.9); box-shadow: 0 0 34px rgba(255,55,94,.42), inset 0 0 24px rgba(255,255,255,.12); transform: scale(1.12); }
+.ability-gesture-feedback { --skill-x: 50%; --skill-y: 50%; position: fixed; z-index: 1; left: var(--skill-x); top: var(--skill-y); width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.ability-gesture-feedback i { position: absolute; right: 0; top: -2px; width: var(--skill-distance, 0px); height: 4px; transform-origin: right center; transform: rotate(var(--skill-angle, 0rad)); border-radius: 4px; background: linear-gradient(90deg, transparent, var(--cyan)); box-shadow: 0 0 14px rgba(83,233,255,.72); }
+.ability-gesture-feedback span { position: absolute; left: -24px; top: -24px; width: 48px; height: 48px; border: 2px solid var(--cyan); border-radius: 50%; box-shadow: 0 0 22px rgba(83,233,255,.28), inset 0 0 15px rgba(83,233,255,.14); animation: skillTargetPulse .72s ease-in-out infinite alternate; }
+.ability-gesture-feedback small { position: absolute; left: -78px; top: 34px; width: 156px; color: #dffaff; font-size: .62rem; font-weight: 850; text-align: center; text-shadow: 0 2px 8px #000; }.ability-gesture-feedback.is-visible { opacity: 1; }
+@keyframes skillTargetPulse { to { transform: scale(1.18); opacity: .55; } }
 .move-zone { position: absolute; left: calc(var(--safe-left) + 18px); bottom: calc(var(--safe-bottom) + 20px); width: 170px; height: 170px; display: grid; place-items: center; pointer-events: auto; }
 .control-caption { position: absolute; bottom: -1px; color: rgba(255, 255, 255, .54); font-size: .68rem; letter-spacing: .18em; }
 .virtual-stick { position: relative; width: 136px; height: 136px; display: grid; place-items: center; border: 1px solid rgba(84, 232, 255, .32); border-radius: 50%; background: rgba(4, 13, 23, .3); box-shadow: inset 0 0 30px rgba(37, 203, 255, .08); touch-action: none; transition: transform .12s ease, border-color .12s ease, background .12s ease; }
@@ -113,7 +121,7 @@ button:focus-visible, select:focus-visible { outline: 3px solid var(--yellow); o
 .ability-button { width: 62px; height: 62px; border: 1px solid rgba(255, 255, 255, .28); background: rgba(7, 20, 32, .76); box-shadow: inset 0 0 18px rgba(255, 255, 255, .05); }
 .ability-button span { font-size: 1.25rem; font-weight: 950; }.ability-button small { font-size: .59rem; color: #c8d7df; }.ability-button > i { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 50%; color: white; font-style: normal; font-weight: 900; background: rgba(3, 9, 16, .68); }
 .ability-button.shield { left: 0; bottom: 72px; color: var(--cyan); }.ability-button.repair { left: 61px; top: 4px; color: var(--green); }.ability-button.dash { right: 59px; top: 0; color: var(--yellow); }.ability-button.storm { right: 0; top: 55px; color: #c293ff; }
-.ability-button.is-pressed { transform: scale(.92); filter: brightness(1.4); }.ability-button.is-cooling { filter: saturate(.4); }
+.ability-button.is-pressed { transform: scale(.92); filter: brightness(1.4); }.ability-button.is-dragging { border-color: currentColor; box-shadow: 0 0 25px color-mix(in srgb, currentColor 42%, transparent), inset 0 0 18px rgba(255,255,255,.12); }.ability-button.is-cooling { filter: saturate(.4); }
 .fire-button { --aim-x: 0px; --aim-y: 0px; right: 18px; bottom: 0; width: 106px; height: 106px; border: 2px solid var(--yellow); color: var(--yellow); background: rgba(39, 33, 11, .76); box-shadow: 0 0 30px rgba(255, 214, 77, .16), inset 0 0 28px rgba(255, 214, 77, .13); }
 .fire-button.is-aiming { transform: scale(.96); background: rgba(65,50,8,.86); box-shadow: 0 0 42px rgba(255,214,77,.3), inset 0 0 30px rgba(255,214,77,.2); }
 .ammo-switch-button { position: absolute; right: 124px; bottom: 12px; width: 58px; height: 58px; display: grid; place-items: center; align-content: center; gap: 1px; border: 1px solid rgba(83,233,255,.4); border-radius: 50%; color: var(--cyan); background: rgba(7,20,32,.78); touch-action: none; }.ammo-switch-button i { font-size: 1.15rem; }.ammo-switch-button span { font-size: .55rem; font-weight: 850; }
@@ -196,6 +204,7 @@ button:focus-visible, select:focus-visible { outline: 3px solid var(--yellow); o
 }
 
 @media (pointer: fine) { .touch-controls { display: none !important; } }
+.force-touch .touch-controls:not(.is-hidden) { display: block !important; }
 @media (max-width: 1050px) {
   .menu-layout { grid-template-columns: minmax(240px, .68fr) minmax(540px, 1.32fr); gap: 28px; padding-inline: 0; }
   .hero-copy h1 { font-size: clamp(3.2rem, 7vw, 5rem); }.hero-copy > p { font-size: .96rem; }
