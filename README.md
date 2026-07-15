@@ -60,7 +60,7 @@ legacy/           原单文件 Canvas 原型，仅作体验对照
 docs/             架构、路线图与技术决策
 ```
 
-详细说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 和 [docs/ROADMAP.md](docs/ROADMAP.md)。
+详细说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 和 [docs/ROADMAP.md](docs/ROADMAP.md)。已批准的“四季山海远征”升级见 [产品规格](docs/FOUR_SEASONS_PRODUCT_SPEC.md) 与 [分阶段开发计划](docs/FOUR_SEASONS_DEVELOPMENT_PLAN.md)。
 
 ## 儿童隐私原则
 
