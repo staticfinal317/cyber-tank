@@ -10,22 +10,70 @@
  * snapshot.tick 正常播放完，而不是把画面定格在 status 刚变化的那一帧。结算数据（分数/命数/星级）
  * 仍在 status 翻转的那一帧采样进 finalSnapshot，供 finishStage 使用，不受后续表现 tick 影响。
  */
-import type { ClassicWorld, LevelData, PlayerInput, SimEvent, WorldSnapshot } from '../core/types';
-import { TICK_RATE } from '../core/constants';
+import type { ClassicWorld, EnemyKind, LevelData, PlayerInput, SimEvent, WorldSnapshot } from '../core/types';
+import { ENEMY, TICK_RATE } from '../core/constants';
 import { CLASSIC_LEVELS } from '../content/levels';
 import { RNG } from '../../core/RNG';
 import { World } from '../sim/World';
 import { ClassicRenderer } from '../render/ClassicRenderer';
 import { createInitialFsmState, transition, type FsmEvent, type FsmState } from './fsm';
+import { createMemoryStorage, readHiScore, recordHiScoreIfHigher, type StorageLike } from './hiscore';
 import { KeyboardController, type MenuAction } from './keyboard';
 import { GameLoop } from './loop';
-import { ScreensOverlay } from './screens';
+import { ScreensOverlay, type KillTallyRow } from './screens';
+
+/** 战报行展示顺序：基础/快速/加农/重型，恒定不随关卡内容变化 */
+const ENEMY_KIND_ORDER: readonly EnemyKind[] = ['basic', 'fast', 'power', 'armor'];
+
+function emptyKindTally(): Record<EnemyKind, number> {
+  return { basic: 0, fast: 0, power: 0, armor: 0 };
+}
+
+/**
+ * 本关击杀统计（纯逻辑，无 DOM 依赖，可独立实例化单测）：按 EnemyKind 分类累计击杀数与分值小计。
+ * ClassicGame 在每关开始（stageIntro 进入）时 reset()，战斗中把每 tick 的事件流喂给 applyEvents()。
+ */
+export class StageKillTally {
+  private counts: Record<EnemyKind, number> = emptyKindTally();
+  private scores: Record<EnemyKind, number> = emptyKindTally();
+
+  reset(): void {
+    this.counts = emptyKindTally();
+    this.scores = emptyKindTally();
+  }
+
+  /** 消费一个 tick 产生的事件流；只关心 enemyDestroyed（kind/score 均在事件里），其余事件忽略 */
+  applyEvents(events: readonly SimEvent[]): void {
+    for (const event of events) {
+      if (event.type !== 'enemyDestroyed') continue;
+      this.counts[event.kind] += 1;
+      this.scores[event.kind] += event.score;
+    }
+  }
+
+  countOf(kind: EnemyKind): number {
+    return this.counts[kind];
+  }
+
+  scoreOf(kind: EnemyKind): number {
+    return this.scores[kind];
+  }
+}
 
 /** 结算前延迟：让爆炸/结算动画的最后一帧多停留一会儿再切结算屏 [provisional 节奏] */
 const RESULT_DELAY_TICKS = 180;
 
 /** 结算延迟期间喂给 world.tick() 的中性输入：status 已非 playing，World 不会用它模拟任何实体 */
 const NEUTRAL_INPUT: PlayerInput = { dir: null, fire: false };
+
+/** window.localStorage 在"禁止站点数据"等隐私配置下连属性访问都会抛 SecurityError，降级为会话内存实现 */
+function defaultStorage(): StorageLike {
+  try {
+    return window.localStorage;
+  } catch {
+    return createMemoryStorage();
+  }
+}
 
 /** 过场屏展示时长：约 2 秒 */
 const STAGE_INTRO_TICKS = 2 * TICK_RATE;
@@ -38,6 +86,8 @@ export interface ClassicGameOptions {
   onEvents?: (events: readonly SimEvent[]) => void;
   /** 进入过场屏（第 N 关）时回调，stageNumber 为 1-based；集成方用于触发开场 jingle */
   onStageStart?: (stageNumber: number) => void;
+  /** HI-SCORE 持久化用的 Storage 实现；不传则用 window.localStorage（测试可注入假对象） */
+  storage?: StorageLike;
 }
 
 export class ClassicGame {
@@ -46,6 +96,8 @@ export class ClassicGame {
   private readonly screens: ScreensOverlay;
   private readonly keyboard: KeyboardController;
   private readonly loop: GameLoop;
+  private readonly storage: StorageLike;
+  private readonly killTally = new StageKillTally();
 
   private fsmState: FsmState;
   private world: ClassicWorld | null = null;
@@ -57,9 +109,11 @@ export class ClassicGame {
   private introTicks = 0;
   private pendingStageScore = 0;
   private pendingTotalScore = 0;
+  private pendingBreakdown: readonly KillTallyRow[] = [];
 
   constructor(options: ClassicGameOptions) {
     this.options = options;
+    this.storage = options.storage ?? defaultStorage();
     this.renderer = new ClassicRenderer({ container: options.container });
     this.screens = new ScreensOverlay(options.container);
     this.keyboard = new KeyboardController({ onMenuAction: (action) => this.handleMenuAction(action) });
@@ -71,7 +125,7 @@ export class ClassicGame {
 
   /** 进入标题菜单并启动 rAF 主循环 */
   start(): void {
-    this.screens.showMenu();
+    this.screens.showMenu(readHiScore(this.storage));
     this.loop.start();
   }
 
@@ -141,6 +195,7 @@ export class ClassicGame {
     if (world.status === 'playing') {
       const input = this.keyboard.sample();
       const events = world.tick([input]);
+      this.killTally.applyEvents(events);
       const snapshot = world.snapshot();
       this.renderer.render(snapshot, events);
       this.options.onEvents?.(events);
@@ -169,6 +224,12 @@ export class ClassicGame {
     if (!snapshot) throw new Error('ClassicGame: finishStage 缺少 finalSnapshot（不应发生）');
 
     this.pendingTotalScore = snapshot.hud.score;
+    this.pendingBreakdown = ENEMY_KIND_ORDER.map((kind) => ({
+      kind,
+      count: this.killTally.countOf(kind),
+      unitPrice: ENEMY[kind].score,
+      subtotal: this.killTally.scoreOf(kind),
+    }));
     if (status === 'stageClear') {
       const playerTank = snapshot.tanks.find((t) => t.kind === 'player');
       this.pendingCarryOver = {
@@ -190,10 +251,11 @@ export class ClassicGame {
         this.pendingCarryOver = undefined;
         this.finalSnapshot = null;
         this.resultDelayTicks = 0;
-        this.screens.showMenu();
+        this.screens.showMenu(readHiScore(this.storage));
         return;
       case 'stageIntro':
         this.introTicks = 0;
+        this.killTally.reset();
         this.screens.showStageIntro(state.stageIndex + 1);
         this.options.onStageStart?.(state.stageIndex + 1);
         return;
@@ -205,13 +267,19 @@ export class ClassicGame {
         this.screens.showPaused();
         return;
       case 'stageClear':
-        this.screens.showStageClear({ stageScore: this.pendingStageScore, totalScore: this.pendingTotalScore });
+        this.screens.showStageClear({
+          stageScore: this.pendingStageScore,
+          totalScore: this.pendingTotalScore,
+          breakdown: this.pendingBreakdown,
+        });
         return;
       case 'allClear':
+        recordHiScoreIfHigher(this.storage, this.pendingTotalScore);
         this.screens.showAllClear({ totalScore: this.pendingTotalScore });
         return;
       case 'gameOver':
-        this.screens.showGameOver({ totalScore: this.pendingTotalScore });
+        recordHiScoreIfHigher(this.storage, this.pendingTotalScore);
+        this.screens.showGameOver({ totalScore: this.pendingTotalScore, breakdown: this.pendingBreakdown });
         return;
       default: {
         const exhaustive: never = state.kind;

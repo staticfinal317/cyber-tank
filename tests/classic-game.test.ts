@@ -8,8 +8,8 @@ import {
 import { DirectionStack, KeyboardController } from '../src/classic/game/keyboard';
 import { FixedStepAccumulator, GameLoop } from '../src/classic/game/loop';
 import { ScreensOverlay } from '../src/classic/game/screens';
-import { ClassicGame } from '../src/classic/game/ClassicGame';
-import { Dir } from '../src/classic/core/types';
+import { ClassicGame, StageKillTally } from '../src/classic/game/ClassicGame';
+import { Dir, type SimEvent } from '../src/classic/core/types';
 import { CLASSIC_LEVELS } from '../src/classic/content/levels';
 import { World } from '../src/classic/sim/World';
 import { RNG } from '../src/core/RNG';
@@ -276,6 +276,80 @@ describe('FixedStepAccumulator · 固定步长累加器（纯逻辑，可在 nod
     acc.advance(STEP * 0.5);
     acc.advance(-1000);
     expect(acc.remainder).toBeCloseTo(STEP * 0.5, 6);
+  });
+});
+
+/* ==================== ClassicGame.ts：StageKillTally（纯逻辑，可在 node 直接单测） ==================== */
+
+function enemyDestroyed(kind: 'basic' | 'fast' | 'power' | 'armor', score: number): SimEvent {
+  return { type: 'enemyDestroyed', tankId: 1, kind, score, x: 0, y: 0 };
+}
+
+describe('StageKillTally · 本关击杀统计（纯逻辑，可独立实例化单测，无 DOM 依赖）', () => {
+  it('空关卡：未喂入任何事件时，各类型计数与分值小计均为 0', () => {
+    const tally = new StageKillTally();
+    (['basic', 'fast', 'power', 'armor'] as const).forEach((kind) => {
+      expect(tally.countOf(kind)).toBe(0);
+      expect(tally.scoreOf(kind)).toBe(0);
+    });
+  });
+
+  it('多类型混合：按 EnemyKind 分类累计计数与分值小计，互不干扰', () => {
+    const tally = new StageKillTally();
+    tally.applyEvents([
+      enemyDestroyed('basic', 100),
+      enemyDestroyed('basic', 100),
+      enemyDestroyed('fast', 200),
+      enemyDestroyed('armor', 400),
+    ]);
+    expect(tally.countOf('basic')).toBe(2);
+    expect(tally.scoreOf('basic')).toBe(200);
+    expect(tally.countOf('fast')).toBe(1);
+    expect(tally.scoreOf('fast')).toBe(200);
+    expect(tally.countOf('armor')).toBe(1);
+    expect(tally.scoreOf('armor')).toBe(400);
+    expect(tally.countOf('power')).toBe(0); // 本关未出现的类型：保持 0，不受其他类型影响
+    expect(tally.scoreOf('power')).toBe(0);
+  });
+
+  it('忽略非 enemyDestroyed 事件：fire/tankHit/stageClear 等不影响计数', () => {
+    const tally = new StageKillTally();
+    tally.applyEvents([
+      { type: 'fire', fromPlayer: true },
+      { type: 'tankHit', tankId: 1 },
+      { type: 'stageClear' },
+      enemyDestroyed('basic', 100),
+    ]);
+    expect(tally.countOf('basic')).toBe(1);
+    expect(tally.scoreOf('basic')).toBe(100);
+  });
+
+  it('applyEvents 支持跨多次 tick 累加：分批喂入的事件流总数一致', () => {
+    const tally = new StageKillTally();
+    tally.applyEvents([enemyDestroyed('basic', 100)]);
+    tally.applyEvents([]); // 空 tick（无击杀）不应改变累计
+    tally.applyEvents([enemyDestroyed('basic', 100), enemyDestroyed('power', 300)]);
+    expect(tally.countOf('basic')).toBe(2);
+    expect(tally.scoreOf('basic')).toBe(200);
+    expect(tally.countOf('power')).toBe(1);
+    expect(tally.scoreOf('power')).toBe(300);
+  });
+
+  it('跨关清零：reset() 后所有类型的计数与分值小计归零，可复用同一实例统计下一关', () => {
+    const tally = new StageKillTally();
+    tally.applyEvents([enemyDestroyed('basic', 100), enemyDestroyed('armor', 400)]);
+    expect(tally.countOf('basic')).toBe(1);
+
+    tally.reset();
+    (['basic', 'fast', 'power', 'armor'] as const).forEach((kind) => {
+      expect(tally.countOf(kind)).toBe(0);
+      expect(tally.scoreOf(kind)).toBe(0);
+    });
+
+    // reset 后继续正常累计（模拟下一关的击杀）
+    tally.applyEvents([enemyDestroyed('fast', 200)]);
+    expect(tally.countOf('fast')).toBe(1);
+    expect(tally.countOf('basic')).toBe(0); // 上一关的 basic 击杀未残留
   });
 });
 
