@@ -1,13 +1,13 @@
 {
-  "name": "赛博坦克 · 星核远征",
-  "short_name": "赛博坦克",
-  "description": "面向 6–12 岁儿童与家庭的 3D 同屏协作坦克游戏。",
+  "name": "坦克大作战",
+  "short_name": "坦克大作战",
+  "description": "经典像素坦克对战游戏的家庭复刻版，单人闯关守护基地。",
   "start_url": "./",
   "scope": "./",
   "display": "fullscreen",
-  "orientation": "any",
-  "background_color": "#07101b",
-  "theme_color": "#07101b",
+  "orientation": "landscape",
+  "background_color": "#000000",
+  "theme_color": "#000000",
   "icons": [
     { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
   ]

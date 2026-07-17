@@ -1,0 +1,20 @@
+/* 经典复刻 · 全局样式：黑底全屏容器，画面本体由 ClassicRenderer 整数缩放居中 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background: #000000;
+  overflow: hidden;
+}
+
+#game-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
