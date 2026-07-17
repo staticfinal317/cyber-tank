@@ -99,10 +99,17 @@ export class GamepadMapper {
 
     // 方向：移除不再活跃的方向（保留其余相对顺序），新激活的追加到末尾
     const active = activeDirections(frame);
+    // 菜单光标（D1）：Up/Down 从"未激活"到"本帧激活"的上沿额外产出 menuUp/menuDown
+    // （十字键与摇杆统一覆盖，因 active 已是两者并集）；this.order 在上一次 update() 结束时
+    // 已收敛为"上一帧活跃方向集合"，故此处取值即为边沿检测，无需额外的 prev 布尔量。
+    const upWasActive = this.order.includes(Dir.Up);
+    const downWasActive = this.order.includes(Dir.Down);
     this.order = this.order.filter((dir) => active.includes(dir));
     for (const dir of active) {
       if (!this.order.includes(dir)) this.order.push(dir);
     }
+    if (!upWasActive && active.includes(Dir.Up)) actions.push('menuUp');
+    if (!downWasActive && active.includes(Dir.Down)) actions.push('menuDown');
 
     // fire：面键任一按住；confirm 只在"无→有"上沿产出一次
     const faceActive = FACE_BUTTON_INDICES.some((index) => buttonAt(frame, index));

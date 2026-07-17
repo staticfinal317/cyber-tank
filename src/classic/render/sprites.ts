@@ -239,6 +239,19 @@ const PLAYER_PALETTES: Record<0 | 1 | 2 | 3, Palette> = {
   3: tankPalette({ o: '#4a3500', b: '#ffe066', h: '#fffbc0', s: '#d9ad2a', g: '#2a2a2a', k: '#1a1a1a', a: '#ffffff' }),
 };
 
+/**
+ * P2 玩家调色板（D5）：由 PLAYER_PALETTES 逐色严格 HSL 换相得到——
+ * 色相统一转到 120°（纯绿），饱和度/明度（S/L）逐通道原样保留，故亮暗层次与 P1 一一对应；
+ * g/k（炮管、履带，本就为无色相灰调）在换相下不变，与 P1 共用同一灰阶，仅车体涂装换色。
+ * 形状生成器（buildTankBody/playerBodyOptions）与 P1 完全复用，不重复定义任何形状。
+ */
+const PLAYER2_PALETTES: Record<0 | 1 | 2 | 3, Palette> = {
+  0: tankPalette({ o: '#006b00', b: '#23e823', h: '#7afb7a', s: '#0aa80a', g: '#4a4a4a', k: '#2e2e2e', a: '#23e823' }),
+  1: tankPalette({ o: '#006b00', b: '#30f030', h: '#8aff8a', s: '#0db30d', g: '#4a4a4a', k: '#2e2e2e', a: '#b0ffb0' }),
+  2: tankPalette({ o: '#005c00', b: '#4aff4a', h: '#a0ffa0', s: '#1ac91a', g: '#3a3a3a', k: '#242424', a: '#c2ffc2' }),
+  3: tankPalette({ o: '#004a00', b: '#66ff66', h: '#c0ffc0', s: '#2ad92a', g: '#2a2a2a', k: '#1a1a1a', a: '#ffffff' }),
+};
+
 const ENEMY_KIND_BUILDERS = {
   basic: basicBodyOptions,
   fast: fastBodyOptions,
@@ -265,6 +278,11 @@ const FLASH_PALETTE: Palette = { o: '#7a0000', b: '#ff4d4d', h: '#ffc2c2', s: '#
 
 for (const level of [0, 1, 2, 3] as const) {
   register(`tank.player.l${level}`, 16, 16, PLAYER_PALETTES[level], [
+    buildTankBody(playerBodyOptions(level, 0)),
+    buildTankBody(playerBodyOptions(level, 1)),
+  ]);
+  // P2 帧集（D5）：与 tank.player.lN 同结构同尺寸，仅调色板不同
+  register(`tank.player2.l${level}`, 16, 16, PLAYER2_PALETTES[level], [
     buildTankBody(playerBodyOptions(level, 0)),
     buildTankBody(playerBodyOptions(level, 1)),
   ]);

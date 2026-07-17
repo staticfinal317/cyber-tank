@@ -19,6 +19,11 @@ const EXPECTED: Record<SpriteKey, Expected> = {
   'tank.player.l1': { w: 16, h: 16, frames: 2 },
   'tank.player.l2': { w: 16, h: 16, frames: 2 },
   'tank.player.l3': { w: 16, h: 16, frames: 2 },
+  // D5：P2 绿色帧集，与 tank.player.lN 同结构同尺寸
+  'tank.player2.l0': { w: 16, h: 16, frames: 2 },
+  'tank.player2.l1': { w: 16, h: 16, frames: 2 },
+  'tank.player2.l2': { w: 16, h: 16, frames: 2 },
+  'tank.player2.l3': { w: 16, h: 16, frames: 2 },
   'tank.enemy.basic': { w: 16, h: 16, frames: 2 },
   'tank.enemy.fast': { w: 16, h: 16, frames: 2 },
   'tank.enemy.power': { w: 16, h: 16, frames: 2 },
@@ -129,6 +134,23 @@ describe('classic sprites · 调色板换色变体', () => {
     // 至少存在一处像素随星级变化（侧裙甲/炮管递增），四份形状不能完全相同
     const allIdentical = shapes.every((s) => JSON.stringify(s) === JSON.stringify(shapes[0]));
     expect(allIdentical).toBe(false);
+  });
+
+  it('D5：P2 帧集（tank.player2.lN）与 P1 同星级像素形状完全一致，仅调色板不同（绿色系）', () => {
+    for (const level of [0, 1, 2, 3]) {
+      const p1Key = `tank.player.l${level}`;
+      const p2Key = `tank.player2.l${level}`;
+      expect(spritePixels(p2Key, 0)).toEqual(spritePixels(p1Key, 0));
+      expect(spritePixels(p2Key, 1)).toEqual(spritePixels(p1Key, 1));
+      expect(spritePalette(p2Key)).not.toEqual(spritePalette(p1Key));
+    }
+    // P2 四个星级之间调色板也应互不相同（与 P1 一样随星级递进）
+    const p2Palettes = [0, 1, 2, 3].map((lv) => spritePalette(`tank.player2.l${lv}`));
+    for (let i = 0; i < p2Palettes.length; i += 1) {
+      for (let j = i + 1; j < p2Palettes.length; j += 1) {
+        expect(p2Palettes[i]).not.toEqual(p2Palettes[j]);
+      }
+    }
   });
 });
 

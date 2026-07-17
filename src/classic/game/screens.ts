@@ -25,18 +25,25 @@ export interface KillTallyRow {
   subtotal: number;
 }
 
-export interface StageClearInfo {
-  stageScore: number;
+/** 单个玩家的结算信息：总分、本关战报、是否已出局（结算屏「出局」标注用） */
+export interface PlayerResultInfo {
   totalScore: number;
   breakdown: readonly KillTallyRow[];
+  out: boolean;
+}
+
+export interface StageClearInfo {
+  /** 各玩家结算数据，下标即 playerIndex；长度 1 时渲染单区块（与改造前样式一致），长度 2 时纵向堆叠双区块 */
+  players: readonly (PlayerResultInfo & { stageScore: number })[];
 }
 
 export interface ResultInfo {
   totalScore: number;
 }
 
-export interface GameOverInfo extends ResultInfo {
-  breakdown: readonly KillTallyRow[];
+export interface GameOverInfo {
+  /** 语义同 StageClearInfo.players（无 stageScore：GAME OVER 只展示总分） */
+  players: readonly PlayerResultInfo[];
 }
 
 export class ScreensOverlay {
@@ -65,12 +72,16 @@ export class ScreensOverlay {
     container.appendChild(this.root);
   }
 
-  showMenu(hiScore: number, gamepadConnected: boolean): void {
+  /** selection：菜单光标当前指向的人数（D1，纯表现态，默认 1P） */
+  showMenu(hiScore: number, gamepadConnected: boolean, selection: 1 | 2 = 1): void {
     const lines = [
       this.line('坦克大作战', '32px', '#ffe400'),
       this.line(`HI-SCORE ${hiScore}`, '14px', '#a0a0a0'),
+      this.menuOptionLine('1 PLAYER', selection === 1),
+      this.menuOptionLine('2 PLAYERS', selection === 2),
       this.line('按 Enter 开始', '18px', '#ffffff'),
       this.line('方向键/WASD 移动 · 空格/J 开火 · Esc 暂停', '13px', '#a0a0a0'),
+      this.line('双人：P1 键盘 · P2 手柄', '13px', '#a0a0a0'),
     ];
     if (gamepadConnected) {
       lines.push(this.line('手柄已连接：摇杆/十字键移动 · A 开火 · + 暂停', '13px', '#a0a0a0'));
@@ -87,11 +98,21 @@ export class ScreensOverlay {
   }
 
   showStageClear(info: StageClearInfo): void {
+    const [solo] = info.players;
+    if (info.players.length === 1 && solo) {
+      // 1P 模式：单区块渲染，样式与改造前完全一致（像素级不回归）
+      this.render('#000000', [
+        this.line('本关通过', '28px', '#00ff66'),
+        ...this.breakdownLines(solo.breakdown),
+        this.line(`本关得分 ${solo.stageScore}`, '18px', '#ffffff'),
+        this.line(`总分 ${solo.totalScore}`, '18px', '#ffffff'),
+        this.line('按 Enter 进入下一关', '14px', '#a0a0a0'),
+      ]);
+      return;
+    }
     this.render('#000000', [
       this.line('本关通过', '28px', '#00ff66'),
-      ...this.breakdownLines(info.breakdown),
-      this.line(`本关得分 ${info.stageScore}`, '18px', '#ffffff'),
-      this.line(`总分 ${info.totalScore}`, '18px', '#ffffff'),
+      ...info.players.flatMap((player, playerIndex) => this.playerResultBlock(playerIndex, player, player.stageScore)),
       this.line('按 Enter 进入下一关', '14px', '#a0a0a0'),
     ]);
   }
@@ -105,10 +126,20 @@ export class ScreensOverlay {
   }
 
   showGameOver(info: GameOverInfo): void {
+    const [solo] = info.players;
+    if (info.players.length === 1 && solo) {
+      // 1P 模式：单区块渲染，样式与改造前完全一致（像素级不回归）
+      this.render('#000000', [
+        this.line('GAME OVER', '32px', '#ff3030'),
+        ...this.breakdownLines(solo.breakdown),
+        this.line(`总分 ${solo.totalScore}`, '18px', '#ffffff'),
+        this.line('按 Enter 回到标题', '14px', '#a0a0a0'),
+      ]);
+      return;
+    }
     this.render('#000000', [
       this.line('GAME OVER', '32px', '#ff3030'),
-      ...this.breakdownLines(info.breakdown),
-      this.line(`总分 ${info.totalScore}`, '18px', '#ffffff'),
+      ...info.players.flatMap((player, playerIndex) => this.playerResultBlock(playerIndex, player)),
       this.line('按 Enter 回到标题', '14px', '#a0a0a0'),
     ]);
   }
@@ -137,6 +168,27 @@ export class ScreensOverlay {
     el.style.fontWeight = 'bold';
     el.style.letterSpacing = '1px';
     return el;
+  }
+
+  /** 菜单选项行（D1）：当前选中项以 ▶ 光标 + 高亮色标记，未选中项留白对齐、暗色 */
+  private menuOptionLine(label: string, active: boolean): HTMLDivElement {
+    return this.line(`${active ? '▶ ' : '  '}${label}`, '18px', active ? '#ffffff' : '#606060');
+  }
+
+  /**
+   * 单个玩家的结算区块（D3，2P 专用，纵向堆叠，不做双列布局）：
+   * 「nP 本关得分 xxx」（仅 stageClear 传 stageScore 时展示）→ 战报明细 → 「nP 总分 xxx（出局）」。
+   */
+  private playerResultBlock(playerIndex: number, player: PlayerResultInfo, stageScore?: number): HTMLDivElement[] {
+    const label = playerIndex === 0 ? '1P' : '2P';
+    const lines: HTMLDivElement[] = [];
+    if (stageScore !== undefined) {
+      lines.push(this.line(`${label} 本关得分 ${stageScore}`, '16px', '#ffe400'));
+    }
+    lines.push(...this.breakdownLines(player.breakdown));
+    const outSuffix = player.out ? '（出局）' : '';
+    lines.push(this.line(`${label} 总分 ${player.totalScore}${outSuffix}`, '18px', '#ffffff'));
+    return lines;
   }
 
   /**

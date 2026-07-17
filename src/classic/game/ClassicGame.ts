@@ -10,7 +10,17 @@
  * snapshot.tick 正常播放完，而不是把画面定格在 status 刚变化的那一帧。结算数据（分数/命数/星级）
  * 仍在 status 翻转的那一帧采样进 finalSnapshot，供 finishStage 使用，不受后续表现 tick 影响。
  */
-import type { ClassicWorld, EnemyKind, LevelData, PlayerInput, SimEvent, WorldSnapshot } from '../core/types';
+import type {
+  ClassicWorld,
+  ClassicWorldOptions,
+  EnemyKind,
+  LevelData,
+  PlayerHudView,
+  PlayerInput,
+  SimEvent,
+  TankView,
+  WorldSnapshot,
+} from '../core/types';
 import { ENEMY, TICK_RATE } from '../core/constants';
 import { CLASSIC_LEVELS } from '../content/levels';
 import { RNG } from '../../core/RNG';
@@ -21,7 +31,7 @@ import { GamepadBridge } from './gamepad';
 import { createMemoryStorage, readHiScore, recordHiScoreIfHigher, type StorageLike } from './hiscore';
 import { KeyboardController, type MenuAction } from './keyboard';
 import { GameLoop } from './loop';
-import { ScreensOverlay, type KillTallyRow } from './screens';
+import { ScreensOverlay, type KillTallyRow, type PlayerResultInfo } from './screens';
 
 /** 战报行展示顺序：基础/快速/加农/重型，恒定不随关卡内容变化 */
 const ENEMY_KIND_ORDER: readonly EnemyKind[] = ['basic', 'fast', 'power', 'armor'];
@@ -34,30 +44,47 @@ function emptyKindTally(): Record<EnemyKind, number> {
  * 本关击杀统计（纯逻辑，无 DOM 依赖，可独立实例化单测）：按 EnemyKind 分类累计击杀数与分值小计。
  * ClassicGame 在每关开始（stageIntro 进入）时 reset()，战斗中把每 tick 的事件流喂给 applyEvents()。
  */
+/** 双人上限固定 2 槽（playerCount 契约恒为 1|2）；playerIndex 越界按空计数处理，见 applyEvents 防御 */
+const MAX_TALLY_PLAYERS = 2;
+
 export class StageKillTally {
-  private counts: Record<EnemyKind, number> = emptyKindTally();
-  private scores: Record<EnemyKind, number> = emptyKindTally();
+  private counts: Record<EnemyKind, number>[] = Array.from({ length: MAX_TALLY_PLAYERS }, () => emptyKindTally());
+  private scores: Record<EnemyKind, number>[] = Array.from({ length: MAX_TALLY_PLAYERS }, () => emptyKindTally());
 
   reset(): void {
-    this.counts = emptyKindTally();
-    this.scores = emptyKindTally();
+    this.counts = Array.from({ length: MAX_TALLY_PLAYERS }, () => emptyKindTally());
+    this.scores = Array.from({ length: MAX_TALLY_PLAYERS }, () => emptyKindTally());
   }
 
-  /** 消费一个 tick 产生的事件流；只关心 enemyDestroyed（kind/score 均在事件里），其余事件忽略 */
+  /** 消费一个 tick 产生的事件流；按 enemyDestroyed.byPlayer 分账到对应玩家槽位，其余事件忽略 */
   applyEvents(events: readonly SimEvent[]): void {
     for (const event of events) {
       if (event.type !== 'enemyDestroyed') continue;
-      this.counts[event.kind] += 1;
-      this.scores[event.kind] += event.score;
+      const counts = this.counts[event.byPlayer];
+      const scores = this.scores[event.byPlayer];
+      if (!counts || !scores) continue; // 防御：byPlayer 越界（不应发生，玩家数恒 ≤ 2）
+      counts[event.kind] += 1;
+      scores[event.kind] += event.score;
     }
   }
 
-  countOf(kind: EnemyKind): number {
-    return this.counts[kind];
+  /** playerIndex 默认 0：兼容既有 1P 单参数调用方，历史用例语义不变 */
+  countOf(kind: EnemyKind, playerIndex = 0): number {
+    return this.counts[playerIndex]?.[kind] ?? 0;
   }
 
-  scoreOf(kind: EnemyKind): number {
-    return this.scores[kind];
+  scoreOf(kind: EnemyKind, playerIndex = 0): number {
+    return this.scores[playerIndex]?.[kind] ?? 0;
+  }
+
+  /** 组装某玩家的结算战报行（固定按 ENEMY_KIND_ORDER 顺序），供 finishStage 直接喂给 screens */
+  breakdownRows(playerIndex = 0): readonly KillTallyRow[] {
+    return ENEMY_KIND_ORDER.map((kind) => ({
+      kind,
+      count: this.countOf(kind, playerIndex),
+      unitPrice: ENEMY[kind].score,
+      subtotal: this.scoreOf(kind, playerIndex),
+    }));
   }
 }
 
@@ -79,14 +106,55 @@ function defaultStorage(): StorageLike {
 /** 过场屏展示时长：约 2 秒 */
 const STAGE_INTRO_TICKS = 2 * TICK_RATE;
 
-/** 机械适配：本层恒为 1P，只读 hud.players[0]（sim 层已支持多玩家数组，见 core/types.ts） */
-function requirePlayer0Hud(snapshot: WorldSnapshot): WorldSnapshot['hud']['players'][number] {
-  const hud = snapshot.hud.players[0];
-  if (!hud) throw new Error('ClassicGame: hud.players[0] 缺失（不应发生，机械适配假定恒为 1P）');
-  return hud;
+type CarryOver = { level: number; lives: number; score: number; out: boolean };
+
+/** 菜单光标翻转（D1）：仅两个选项，上下键语义相同，直接取反 */
+export function nextMenuSelection(current: 1 | 2): 1 | 2 {
+  return current === 1 ? 2 : 1;
 }
 
-type CarryOver = { level: number; lives: number; score: number; out: boolean };
+/**
+ * D2 输入路由：1P 维持现状合并（dir 手柄优先、fire 取或）；2P 键盘/手柄各自独立驱动 P1/P2，
+ * 不合并——手柄未连接时 gamepadInput 已是中性输入（GamepadBridge.sample() 断开态契约，见 gamepad.ts）。
+ */
+export function buildStepInputs(
+  playerCount: 1 | 2,
+  keyboardInput: PlayerInput,
+  gamepadInput: PlayerInput,
+): PlayerInput[] {
+  if (playerCount === 1) {
+    return [{ dir: gamepadInput.dir ?? keyboardInput.dir, fire: keyboardInput.fire || gamepadInput.fire }];
+  }
+  return [keyboardInput, gamepadInput];
+}
+
+/** 结算延迟期喂给 world.tick() 的中性输入数组，长度须 ≥ playerCount（契约见 core/types.ts） */
+export function buildNeutralInputs(playerCount: 1 | 2): PlayerInput[] {
+  return playerCount === 1 ? [NEUTRAL_INPUT] : [NEUTRAL_INPUT, NEUTRAL_INPUT];
+}
+
+/** 由 menuSelection 派生 World 构造参数（D1 尾段：onStateEnter 创建 World 时读该字段传 playerCount） */
+export function buildWorldOptions(
+  level: LevelData,
+  rng: RNG,
+  menuSelection: 1 | 2,
+  carryOver: readonly CarryOver[] | undefined,
+): ClassicWorldOptions {
+  return { level, rng, playerCount: menuSelection, carryOver };
+}
+
+/** 过关时为下一关构造各玩家 carryOver（D4）：命数/得分/出局取自 hud，星级取自在场坦克（不在场/出局取 0） */
+export function buildCarryOver(players: readonly PlayerHudView[], tanks: readonly TankView[]): readonly CarryOver[] {
+  return players.map((hud, playerIndex) => {
+    const tank = tanks.find((t) => t.kind === 'player' && t.playerIndex === playerIndex);
+    return { level: tank?.level ?? 0, lives: hud.lives, score: hud.score, out: hud.out };
+  });
+}
+
+/** HI-SCORE 与结算屏总分展示统一取各玩家最高分（D4）；1P 模式即该玩家自身分数，行为不变 */
+export function maxPlayerScore(players: readonly PlayerHudView[]): number {
+  return players.reduce((max, p) => Math.max(max, p.score), 0);
+}
 
 export interface ClassicGameOptions {
   container: HTMLElement;
@@ -111,14 +179,18 @@ export class ClassicGame {
   private fsmState: FsmState;
   private world: ClassicWorld | null = null;
 
-  private pendingCarryOver: CarryOver | undefined;
+  /** D1：菜单光标当前指向的人数，默认单人；仅本层持有，不进 FSM（design D1 明确要求） */
+  private menuSelection: 1 | 2 = 1;
+  private pendingCarryOver: readonly CarryOver[] | undefined;
   private finalSnapshot: WorldSnapshot | null = null;
   private resultDelayTicks = 0;
-  private stageStartScore = 0;
+  /** 每个玩家进入本关时的起始分数，下标即 playerIndex，供 finishStage 算「本关得分」 */
+  private stageStartScores: readonly number[] = [];
   private introTicks = 0;
-  private pendingStageScore = 0;
-  private pendingTotalScore = 0;
-  private pendingBreakdown: readonly KillTallyRow[] = [];
+  /** HI-SCORE / AllClear 展示用总分（D4：取各玩家最高分） */
+  private pendingResultTotalScore = 0;
+  private pendingStageClearPlayers: readonly (PlayerResultInfo & { stageScore: number })[] = [];
+  private pendingGameOverPlayers: readonly PlayerResultInfo[] = [];
 
   constructor(options: ClassicGameOptions) {
     this.options = options;
@@ -138,7 +210,7 @@ export class ClassicGame {
 
   /** 进入标题菜单并启动 rAF 主循环 */
   start(): void {
-    this.screens.showMenu(readHiScore(this.storage), this.gamepad.connected);
+    this.screens.showMenu(readHiScore(this.storage), this.gamepad.connected, this.menuSelection);
     this.loop.start();
   }
 
@@ -178,11 +250,17 @@ export class ClassicGame {
       this.dispatch({ type: 'togglePause' });
     }
     if (this.fsmState.kind === 'menu') {
-      this.screens.showMenu(readHiScore(this.storage), connected);
+      this.screens.showMenu(readHiScore(this.storage), connected, this.menuSelection);
     }
   }
 
   private handleMenuAction(action: MenuAction): void {
+    if (action === 'menuUp' || action === 'menuDown') {
+      if (this.fsmState.kind !== 'menu') return; // D1：仅菜单态消费，其余状态忽略、无副作用
+      this.menuSelection = nextMenuSelection(this.menuSelection);
+      this.screens.showMenu(readHiScore(this.storage), this.gamepad.connected, this.menuSelection);
+      return;
+    }
     this.dispatch(action === 'confirm' ? { type: 'confirm' } : { type: 'togglePause' });
   }
 
@@ -225,8 +303,8 @@ export class ClassicGame {
     if (world.status === 'playing') {
       const kb = this.keyboard.sample();
       const gp = this.gamepad.sample();
-      const input = { dir: gp.dir ?? kb.dir, fire: kb.fire || gp.fire };
-      const events = world.tick([input]);
+      const inputs = buildStepInputs(this.menuSelection, kb, gp);
+      const events = world.tick(inputs);
       this.killTally.applyEvents(events);
       const snapshot = world.snapshot();
       this.renderer.render(snapshot, events);
@@ -242,7 +320,7 @@ export class ClassicGame {
 
     if (this.resultDelayTicks > 0) {
       this.resultDelayTicks -= 1;
-      const events = world.tick([NEUTRAL_INPUT]);
+      const events = world.tick(buildNeutralInputs(this.menuSelection));
       const snapshot = world.snapshot();
       this.renderer.render(snapshot, events);
       this.options.onEvents?.(events);
@@ -255,25 +333,22 @@ export class ClassicGame {
     const snapshot = this.finalSnapshot;
     if (!snapshot) throw new Error('ClassicGame: finishStage 缺少 finalSnapshot（不应发生）');
 
-    const hud = requirePlayer0Hud(snapshot);
-    this.pendingTotalScore = hud.score;
-    this.pendingBreakdown = ENEMY_KIND_ORDER.map((kind) => ({
-      kind,
-      count: this.killTally.countOf(kind),
-      unitPrice: ENEMY[kind].score,
-      subtotal: this.killTally.scoreOf(kind),
+    const players = snapshot.hud.players;
+    const playerResults: PlayerResultInfo[] = players.map((hud, playerIndex) => ({
+      totalScore: hud.score,
+      breakdown: this.killTally.breakdownRows(playerIndex),
+      out: hud.out,
     }));
+    this.pendingResultTotalScore = maxPlayerScore(players);
     if (status === 'stageClear') {
-      const playerTank = snapshot.tanks.find((t) => t.kind === 'player');
-      this.pendingCarryOver = {
-        level: playerTank?.level ?? 0,
-        lives: hud.lives,
-        score: hud.score,
-        out: false,
-      };
-      this.pendingStageScore = hud.score - this.stageStartScore;
+      this.pendingCarryOver = buildCarryOver(players, snapshot.tanks);
+      this.pendingStageClearPlayers = playerResults.map((result, playerIndex) => ({
+        ...result,
+        stageScore: result.totalScore - (this.stageStartScores[playerIndex] ?? 0),
+      }));
       this.dispatch({ type: 'stageClear' });
     } else {
+      this.pendingGameOverPlayers = playerResults;
       this.dispatch({ type: 'gameOver' });
     }
   }
@@ -285,7 +360,7 @@ export class ClassicGame {
         this.pendingCarryOver = undefined;
         this.finalSnapshot = null;
         this.resultDelayTicks = 0;
-        this.screens.showMenu(readHiScore(this.storage), this.gamepad.connected);
+        this.screens.showMenu(readHiScore(this.storage), this.gamepad.connected, this.menuSelection);
         return;
       case 'stageIntro':
         this.introTicks = 0;
@@ -301,19 +376,15 @@ export class ClassicGame {
         this.screens.showPaused();
         return;
       case 'stageClear':
-        this.screens.showStageClear({
-          stageScore: this.pendingStageScore,
-          totalScore: this.pendingTotalScore,
-          breakdown: this.pendingBreakdown,
-        });
+        this.screens.showStageClear({ players: this.pendingStageClearPlayers });
         return;
       case 'allClear':
-        recordHiScoreIfHigher(this.storage, this.pendingTotalScore);
-        this.screens.showAllClear({ totalScore: this.pendingTotalScore });
+        recordHiScoreIfHigher(this.storage, this.pendingResultTotalScore);
+        this.screens.showAllClear({ totalScore: this.pendingResultTotalScore });
         return;
       case 'gameOver':
-        recordHiScoreIfHigher(this.storage, this.pendingTotalScore);
-        this.screens.showGameOver({ totalScore: this.pendingTotalScore, breakdown: this.pendingBreakdown });
+        recordHiScoreIfHigher(this.storage, this.pendingResultTotalScore);
+        this.screens.showGameOver({ players: this.pendingGameOverPlayers });
         return;
       default: {
         const exhaustive: never = state.kind;
@@ -325,15 +396,11 @@ export class ClassicGame {
   private startStage(stageIndex: number): void {
     const level = requireLevel(stageIndex);
     const seed = Date.now(); // 模拟外允许使用 Date.now 生成种子（见 core/types.ts 分层不变式 1）
-    this.world = new World({
-      level,
-      rng: new RNG(seed),
-      carryOver: this.pendingCarryOver ? [this.pendingCarryOver] : undefined,
-    });
+    this.world = new World(buildWorldOptions(level, new RNG(seed), this.menuSelection, this.pendingCarryOver));
     this.pendingCarryOver = undefined;
     this.finalSnapshot = null;
     this.resultDelayTicks = 0;
-    this.stageStartScore = requirePlayer0Hud(this.world.snapshot()).score;
+    this.stageStartScores = this.world.snapshot().hud.players.map((p) => p.score);
   }
 }
 
