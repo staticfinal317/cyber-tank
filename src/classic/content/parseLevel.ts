@@ -59,7 +59,9 @@ export function parseLevel(stage: number, gridText: string, enemyQueue: EnemyKin
   WAVE.spawnCells.forEach((cell, i) => {
     assertEmptyZone(rows, stage, cell.col, cell.row, `第 ${i + 1} 个敌人出生区`);
   });
-  assertEmptyZone(rows, stage, PLAYER.spawnCell.col, PLAYER.spawnCell.row, '玩家出生区');
+  PLAYER.spawnCells.forEach((cell, i) => {
+    assertEmptyZone(rows, stage, cell.col, cell.row, `P${i + 1} 玩家出生区`);
+  });
 
   if (enemyQueue.length !== WAVE.totalEnemies) {
     throw new Error(`parseLevel: 关卡 ${stage} enemyQueue 长度须为 ${WAVE.totalEnemies}，实际 ${enemyQueue.length}`);

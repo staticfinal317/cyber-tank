@@ -79,7 +79,14 @@ function defaultStorage(): StorageLike {
 /** 过场屏展示时长：约 2 秒 */
 const STAGE_INTRO_TICKS = 2 * TICK_RATE;
 
-type CarryOver = { level: number; lives: number; score: number };
+/** 机械适配：本层恒为 1P，只读 hud.players[0]（sim 层已支持多玩家数组，见 core/types.ts） */
+function requirePlayer0Hud(snapshot: WorldSnapshot): WorldSnapshot['hud']['players'][number] {
+  const hud = snapshot.hud.players[0];
+  if (!hud) throw new Error('ClassicGame: hud.players[0] 缺失（不应发生，机械适配假定恒为 1P）');
+  return hud;
+}
+
+type CarryOver = { level: number; lives: number; score: number; out: boolean };
 
 export interface ClassicGameOptions {
   container: HTMLElement;
@@ -248,7 +255,8 @@ export class ClassicGame {
     const snapshot = this.finalSnapshot;
     if (!snapshot) throw new Error('ClassicGame: finishStage 缺少 finalSnapshot（不应发生）');
 
-    this.pendingTotalScore = snapshot.hud.score;
+    const hud = requirePlayer0Hud(snapshot);
+    this.pendingTotalScore = hud.score;
     this.pendingBreakdown = ENEMY_KIND_ORDER.map((kind) => ({
       kind,
       count: this.killTally.countOf(kind),
@@ -259,10 +267,11 @@ export class ClassicGame {
       const playerTank = snapshot.tanks.find((t) => t.kind === 'player');
       this.pendingCarryOver = {
         level: playerTank?.level ?? 0,
-        lives: snapshot.hud.lives,
-        score: snapshot.hud.score,
+        lives: hud.lives,
+        score: hud.score,
+        out: false,
       };
-      this.pendingStageScore = snapshot.hud.score - this.stageStartScore;
+      this.pendingStageScore = hud.score - this.stageStartScore;
       this.dispatch({ type: 'stageClear' });
     } else {
       this.dispatch({ type: 'gameOver' });
@@ -316,11 +325,15 @@ export class ClassicGame {
   private startStage(stageIndex: number): void {
     const level = requireLevel(stageIndex);
     const seed = Date.now(); // 模拟外允许使用 Date.now 生成种子（见 core/types.ts 分层不变式 1）
-    this.world = new World({ level, rng: new RNG(seed), carryOver: this.pendingCarryOver });
+    this.world = new World({
+      level,
+      rng: new RNG(seed),
+      carryOver: this.pendingCarryOver ? [this.pendingCarryOver] : undefined,
+    });
     this.pendingCarryOver = undefined;
     this.finalSnapshot = null;
     this.resultDelayTicks = 0;
-    this.stageStartScore = this.world.snapshot().hud.score;
+    this.stageStartScore = requirePlayer0Hud(this.world.snapshot()).score;
   }
 }
 

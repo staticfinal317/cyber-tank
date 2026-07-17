@@ -288,7 +288,7 @@ export class ClassicRenderer {
     const lifeFrame = this.atlas.frame('hud.lifeIcon');
     const lifeY = LOGICAL_HEIGHT - 24;
     ctx.drawImage(this.atlas.canvas, lifeFrame.x, lifeFrame.y, lifeFrame.w, lifeFrame.h, hudX + 4, lifeY, lifeFrame.w, lifeFrame.h);
-    drawNumber(ctx, snapshot.hud.lives, hudX + 4 + lifeFrame.w + gap + 2, lifeY + 2, 2, '#ffffff');
+    drawNumber(ctx, snapshot.hud.players[0]?.lives ?? 0, hudX + 4 + lifeFrame.w + gap + 2, lifeY + 2, 2, '#ffffff');
 
     drawNumber(ctx, snapshot.hud.stage, hudX + 4, LOGICAL_HEIGHT - 8, 2, '#ffffff');
   }

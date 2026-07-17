@@ -107,6 +107,13 @@ function normalizeNonNegativeInt(value: number, label: string): number {
 
 interface TargetRect { x: number; y: number; w: number; h: number }
 
+/** 单个玩家的命数/得分/出局态（sim 内部，对外经 snapshot().hud.players 暴露只读视图） */
+interface PlayerMeta {
+  lives: number;
+  score: number;
+  out: boolean;
+}
+
 export class World implements ClassicWorld {
   private readonly level: ClassicWorldOptions['level'];
   private readonly rng: RNG;
@@ -120,8 +127,8 @@ export class World implements ClassicWorld {
   private bullets: BulletState[];
   private powerUp: PowerUpState | null;
 
-  private score: number;
-  private lives: number;
+  /** 各玩家命数/得分/出局态，下标即 playerIndex */
+  private players: PlayerMeta[];
   private _status: WorldSnapshot['status'];
 
   private tickCount: number;
@@ -141,6 +148,7 @@ export class World implements ClassicWorld {
     this.baseAlive = true;
     this.shovelTicksRemaining = 0;
 
+    this.tanks = [];
     this.bullets = [];
     this.powerUp = null;
     this._status = 'playing';
@@ -151,37 +159,62 @@ export class World implements ClassicWorld {
     this.enemiesSpawned = 0;
     this.lastEnemySpawnTick = -WAVE.spawnIntervalTicks;
 
-    const carryOver = options.carryOver;
-    const initialLevel = normalizePlayerLevel(carryOver?.level ?? 0);
-    this.lives = normalizeNonNegativeInt(carryOver?.lives ?? PLAYER.initialLives, 'carryOver.lives');
-    this.score = normalizeNonNegativeInt(carryOver?.score ?? 0, 'carryOver.score');
+    const playerCount = options.playerCount ?? 1;
+    if (playerCount !== 1 && playerCount !== 2) {
+      throw new Error(`playerCount 必须是 1 或 2，实际 ${String(playerCount)}`);
+    }
 
-    const px = PLAYER.spawnCell.col * HALF_SUB;
-    const py = PLAYER.spawnCell.row * HALF_SUB;
-    const playerTank: TankState = {
-      id: this.nextTankId++,
-      kind: 'player',
-      x: px,
-      y: py,
-      dir: Dir.Up,
-      axis: 'v',
-      level: initialLevel,
-      hp: 1,
-      maxHp: 1,
-      flashing: false,
-      shieldTicks: PLAYER.spawnShieldTicks,
-      frozenTicks: 0,
-      spawningTicks: 0,
-      trackPhase: 0,
-      moved: false,
-      iceSlideRemaining: 0,
-      prevFireInput: false,
-      alive: true,
-      speed: SPEED.player,
-      bulletSpeed: initialLevel >= 1 ? SPEED.bulletFast : SPEED.bulletSlow,
-      aiNextReconsiderTick: 0,
-    };
-    this.tanks = [playerTank];
+    this.players = [];
+    for (let i = 0; i < playerCount; i += 1) {
+      const co = options.carryOver?.[i];
+      if (co?.out === true) {
+        this.players.push({
+          lives: 0,
+          score: normalizeNonNegativeInt(co.score ?? 0, `carryOver[${i}].score`),
+          out: true,
+        });
+        continue;
+      }
+      this.players.push({
+        lives: normalizeNonNegativeInt(co?.lives ?? PLAYER.initialLives, `carryOver[${i}].lives`),
+        score: normalizeNonNegativeInt(co?.score ?? 0, `carryOver[${i}].score`),
+        out: false,
+      });
+
+      const initialLevel = normalizePlayerLevel(co?.level ?? 0);
+      const spawnCell = requireDefined(PLAYER.spawnCells[i], `PLAYER.spawnCells 缺少下标 ${i}`);
+      const px = spawnCell.col * HALF_SUB;
+      const py = spawnCell.row * HALF_SUB;
+      const playerTank: TankState = {
+        id: this.nextTankId++,
+        kind: 'player',
+        playerIndex: i,
+        x: px,
+        y: py,
+        dir: Dir.Up,
+        axis: 'v',
+        level: initialLevel,
+        hp: 1,
+        maxHp: 1,
+        flashing: false,
+        shieldTicks: PLAYER.spawnShieldTicks,
+        frozenTicks: 0,
+        spawningTicks: 0,
+        trackPhase: 0,
+        moved: false,
+        iceSlideRemaining: 0,
+        prevFireInput: false,
+        alive: true,
+        speed: SPEED.player,
+        bulletSpeed: initialLevel >= 1 ? SPEED.bulletFast : SPEED.bulletSlow,
+        aiNextReconsiderTick: 0,
+      };
+      this.tanks.push(playerTank);
+    }
+  }
+
+  private playerMeta(playerIndex: number): PlayerMeta {
+    return requireDefined(this.players[playerIndex], `玩家 ${playerIndex} 的状态丢失（不应发生）`);
   }
 
   get status(): WorldSnapshot['status'] {
@@ -189,16 +222,23 @@ export class World implements ClassicWorld {
   }
 
   tick(inputs: readonly PlayerInput[]): SimEvent[] {
-    if (inputs.length === 0) throw new Error('tick() 至少需要 1 个 PlayerInput（inputs[0]=P1）');
+    if (inputs.length < this.players.length) {
+      throw new Error(`tick() 需要至少 ${this.players.length} 个 PlayerInput，实际 ${inputs.length}`);
+    }
     this.tickCount += 1;
     if (this._status !== 'playing') return [];
 
     const events: SimEvent[] = [];
-    const playerInput = inputs[0] as PlayerInput;
+    const playerTanks = this.tanks.filter((t) => t.kind === 'player');
 
-    const player = this.getPlayerTank();
-    if (player.alive) {
-      this.resolveTankMovement(player, playerInput.dir);
+    for (const player of playerTanks) {
+      if (!player.alive) continue;
+      if (player.frozenTicks > 0) {
+        player.moved = false; // 队友火力冻结期间不可移动
+        continue;
+      }
+      const input = requireDefined(inputs[player.playerIndex], `inputs[${player.playerIndex}] 缺失`);
+      this.resolveTankMovement(player, input.dir);
     }
 
     for (const tank of this.tanks) {
@@ -206,7 +246,12 @@ export class World implements ClassicWorld {
       this.updateEnemyAi(tank);
     }
 
-    if (player.alive) this.tryPlayerFire(player, playerInput.fire, events);
+    for (const player of playerTanks) {
+      if (!player.alive) continue;
+      // 冻结门控在 tryPlayerFire 内部处理（须先更新 prevFireInput，避免解冻瞬间误触发边沿）
+      const input = requireDefined(inputs[player.playerIndex], `inputs[${player.playerIndex}] 缺失`);
+      this.tryPlayerFire(player, input.fire, events);
+    }
     for (const tank of this.tanks) {
       if (tank.kind === 'player' || !tank.alive || tank.spawningTicks > 0 || tank.frozenTicks > 0) continue;
       this.tryEnemyFire(tank, events);
@@ -236,8 +281,7 @@ export class World implements ClassicWorld {
       powerUp: this.powerUp ? { ...this.powerUp } : null,
       hud: {
         enemiesRemaining: this.level.enemyQueue.length - this.enemiesSpawned,
-        lives: this.lives,
-        score: this.score,
+        players: this.players.map((p) => ({ lives: p.lives, score: p.score, out: p.out })),
         stage: this.level.stage,
       },
     };
@@ -251,6 +295,7 @@ export class World implements ClassicWorld {
     for (const t of this.tanks) {
       h = fnvInt32(h, t.id);
       h = fnvByte(h, KIND_CODE[t.kind]);
+      h = fnvByte(h, t.playerIndex);
       h = fnvInt32(h, t.x);
       h = fnvInt32(h, t.y);
       h = fnvByte(h, t.dir);
@@ -269,25 +314,31 @@ export class World implements ClassicWorld {
       h = fnvInt32(h, b.y);
       h = fnvByte(h, b.dir);
       h = fnvBool(h, b.fromPlayer);
+      h = fnvByte(h, b.ownerPlayerIndex);
     }
-    h = fnvInt32(h, this.score);
-    h = fnvInt32(h, this.lives);
+    for (const p of this.players) {
+      h = fnvInt32(h, p.score);
+      h = fnvInt32(h, p.lives);
+      h = fnvBool(h, p.out);
+    }
     h = fnvByte(h, STATUS_CODE[this._status]);
     return h;
   }
 
   /* ---------------- 内部：坦克与地形辅助 ---------------- */
 
-  private getPlayerTank(): TankState {
-    const player = this.tanks.find((t) => t.kind === 'player');
-    if (!player) throw new Error('玩家坦克丢失（不应发生）');
-    return player;
+  /** 存活且非出生保护中的玩家坦克，供 AI 瞄准判定使用（可能为空，AI 须容忍空列表） */
+  private eligiblePlayerTargets(): TargetRect[] {
+    return this.tanks
+      .filter((t) => t.kind === 'player' && t.alive && t.spawningTicks === 0)
+      .map((t) => ({ x: t.x, y: t.y, w: TANK_SUB, h: TANK_SUB }));
   }
 
   private toTankView(t: TankState): TankView {
     return {
       id: t.id,
       kind: t.kind,
+      playerIndex: t.playerIndex,
       x: t.x,
       y: t.y,
       dir: t.dir,
@@ -390,14 +441,11 @@ export class World implements ClassicWorld {
     }
     const kind = tank.kind as EnemyKind;
     if (this.tickCount >= tank.aiNextReconsiderTick) {
-      const player = this.getPlayerTank();
       const ecx = tank.x + TANK_SUB / 2;
       const ecy = tank.y + TANK_SUB / 2;
-      const pcx = player.x + TANK_SUB / 2;
-      const pcy = player.y + TANK_SUB / 2;
       const baseCx = (BASE.cell.col + 1) * HALF_SUB;
       const baseCy = (BASE.cell.row + 1) * HALF_SUB;
-      const dir = pickEnemyDirection(kind, ecx, ecy, baseCx, baseCy, pcx, pcy, this.rng);
+      const dir = pickEnemyDirection(kind, ecx, ecy, baseCx, baseCy, this.eligiblePlayerTargets(), this.rng);
       tank.dir = dir;
       tank.axis = axisOf(dir);
       tank.aiNextReconsiderTick = this.tickCount + enemyReconsiderTicks(kind);
@@ -415,9 +463,12 @@ export class World implements ClassicWorld {
   private tryPlayerFire(player: TankState, fireInput: boolean, events: SimEvent[]): void {
     const edge = fireInput && !player.prevFireInput;
     player.prevFireInput = fireInput;
+    if (player.frozenTicks > 0) return; // 队友火力冻结期间不可开火
     if (!edge) return;
     const maxBullets = this.playerMaxBullets(player.level);
-    const activeCount = this.bullets.filter((b) => b.fromPlayer && !b.removed).length;
+    const activeCount = this.bullets.filter(
+      (b) => b.fromPlayer && b.ownerPlayerIndex === player.playerIndex && !b.removed,
+    ).length;
     if (activeCount >= maxBullets) return;
     this.spawnBullet(player, events);
   }
@@ -425,11 +476,9 @@ export class World implements ClassicWorld {
   private tryEnemyFire(tank: TankState, events: SimEvent[]): void {
     const activeCount = this.bullets.filter((b) => b.ownerTankId === tank.id && !b.removed).length;
     if (activeCount >= ENEMY_MAX_BULLETS) return;
-    const player = this.getPlayerTank();
-    const playerTarget: TargetRect = { x: player.x, y: player.y, w: TANK_SUB, h: TANK_SUB };
     const baseTarget = this.baseRect();
     const fire = shouldEnemyFire(
-      tank.kind as EnemyKind, this.terrain, tank.x, tank.y, tank.dir, playerTarget, baseTarget, this.rng,
+      tank.kind as EnemyKind, this.terrain, tank.x, tank.y, tank.dir, this.eligiblePlayerTargets(), baseTarget, this.rng,
     );
     if (fire) this.spawnBullet(tank, events);
   }
@@ -459,6 +508,7 @@ export class World implements ClassicWorld {
       fromPlayer,
       speed: tank.bulletSpeed,
       ownerTankId: tank.id,
+      ownerPlayerIndex: tank.playerIndex,
       maxLevelPlayerBullet: fromPlayer && tank.level >= 3,
       removed: false,
     });
@@ -595,26 +645,35 @@ export class World implements ClassicWorld {
         if (tank.kind === 'player' || !tank.alive || tank.spawningTicks > 0) continue;
         if (tank.id === bullet.ownerTankId) continue;
         if (!rectsOverlap(bullet.x, bullet.y, BULLET_SUB, BULLET_SUB, tank.x, tank.y, TANK_SUB, TANK_SUB)) continue;
-        this.applyHitToEnemy(tank, events);
+        this.applyHitToEnemy(tank, bullet.ownerPlayerIndex, events);
         bullet.removed = true;
+        return true;
+      }
+      // 队友火力：命中另一玩家的坦克。有护盾无事，否则冻结（不产生 bulletsCancel）
+      for (const target of this.tanks) {
+        if (target.kind !== 'player' || !target.alive || target.spawningTicks > 0) continue;
+        if (target.playerIndex === bullet.ownerPlayerIndex) continue;
+        if (!rectsOverlap(bullet.x, bullet.y, BULLET_SUB, BULLET_SUB, target.x, target.y, TANK_SUB, TANK_SUB)) continue;
+        bullet.removed = true;
+        if (target.shieldTicks > 0) return true; // 有护盾则无事
+        target.frozenTicks = PLAYER.paralyzedTicks;
+        events.push({ type: 'playerParalyzed', playerIndex: target.playerIndex, x: target.x, y: target.y });
         return true;
       }
       return false;
     }
-    const player = this.getPlayerTank();
-    if (
-      player.alive && player.spawningTicks === 0
-      && rectsOverlap(bullet.x, bullet.y, BULLET_SUB, BULLET_SUB, player.x, player.y, TANK_SUB, TANK_SUB)
-    ) {
+    for (const player of this.tanks) {
+      if (player.kind !== 'player' || !player.alive || player.spawningTicks > 0) continue;
+      if (!rectsOverlap(bullet.x, bullet.y, BULLET_SUB, BULLET_SUB, player.x, player.y, TANK_SUB, TANK_SUB)) continue;
       bullet.removed = true;
       if (player.shieldTicks > 0) return true; // 有护盾则无事
-      this.destroyPlayer(events);
+      this.destroyPlayer(player, events);
       return true;
     }
     return false;
   }
 
-  private applyHitToEnemy(tank: TankState, events: SimEvent[]): void {
+  private applyHitToEnemy(tank: TankState, killerPlayerIndex: number, events: SimEvent[]): void {
     if (tank.flashing) {
       tank.flashing = false;
       this.spawnPowerUp(events);
@@ -627,23 +686,31 @@ export class World implements ClassicWorld {
     tank.alive = false;
     const kind = tank.kind as EnemyKind;
     const score = ENEMY[kind].score;
-    this.addScore(score, events);
-    events.push({ type: 'enemyDestroyed', tankId: tank.id, kind, score, x: tank.x, y: tank.y });
+    this.addScoreToPlayer(killerPlayerIndex, score, events);
+    events.push({
+      type: 'enemyDestroyed', tankId: tank.id, kind, score, x: tank.x, y: tank.y, byPlayer: killerPlayerIndex,
+    });
   }
 
-  private destroyPlayer(events: SimEvent[]): void {
-    const player = this.getPlayerTank();
-    events.push({ type: 'playerDestroyed', tankId: player.id, x: player.x, y: player.y });
+  private destroyPlayer(player: TankState, events: SimEvent[]): void {
+    const playerIndex = player.playerIndex;
+    events.push({ type: 'playerDestroyed', tankId: player.id, x: player.x, y: player.y, playerIndex });
     player.level = 0;
-    this.lives -= 1;
-    if (this.lives < 0) {
-      this._status = 'gameOver';
-      events.push({ type: 'gameOver' });
+    const meta = this.playerMeta(playerIndex);
+    meta.lives -= 1;
+    if (meta.lives < 0) {
+      meta.lives = 0;
+      meta.out = true;
       player.alive = false;
+      if (this.players.every((p) => p.out)) {
+        this._status = 'gameOver';
+        events.push({ type: 'gameOver' });
+      }
       return;
     }
-    player.x = PLAYER.spawnCell.col * HALF_SUB;
-    player.y = PLAYER.spawnCell.row * HALF_SUB;
+    const spawnCell = requireDefined(PLAYER.spawnCells[playerIndex], `PLAYER.spawnCells 缺少下标 ${playerIndex}`);
+    player.x = spawnCell.col * HALF_SUB;
+    player.y = spawnCell.row * HALF_SUB;
     player.dir = Dir.Up;
     player.axis = 'v';
     player.hp = 1;
@@ -655,16 +722,17 @@ export class World implements ClassicWorld {
     player.bulletSpeed = SPEED.bulletSlow;
     player.moved = false;
     player.alive = true;
-    events.push({ type: 'playerRespawn' });
+    events.push({ type: 'playerRespawn', playerIndex });
   }
 
-  private addScore(amount: number, events: SimEvent[]): void {
-    const before = Math.floor(this.score / PLAYER.extraLifeScore);
-    this.score += amount;
-    const after = Math.floor(this.score / PLAYER.extraLifeScore);
+  private addScoreToPlayer(playerIndex: number, amount: number, events: SimEvent[]): void {
+    const meta = this.playerMeta(playerIndex);
+    const before = Math.floor(meta.score / PLAYER.extraLifeScore);
+    meta.score += amount;
+    const after = Math.floor(meta.score / PLAYER.extraLifeScore);
     for (let i = before; i < after; i += 1) {
-      this.lives += 1;
-      events.push({ type: 'extraLife' });
+      meta.lives += 1;
+      events.push({ type: 'extraLife', playerIndex });
     }
   }
 
@@ -688,26 +756,29 @@ export class World implements ClassicWorld {
   }
 
   private updatePowerUpPickup(events: SimEvent[]): void {
-    if (!this.powerUp) return;
-    const player = this.getPlayerTank();
-    if (!player.alive) return;
-    if (!rectsOverlap(player.x, player.y, TANK_SUB, TANK_SUB, this.powerUp.x, this.powerUp.y, HALF_SUB, HALF_SUB)) return;
+    const powerUp = this.powerUp;
+    if (!powerUp) return;
+    const picker = this.tanks.find(
+      (t) => t.kind === 'player' && t.alive
+        && rectsOverlap(t.x, t.y, TANK_SUB, TANK_SUB, powerUp.x, powerUp.y, HALF_SUB, HALF_SUB),
+    );
+    if (!picker) return;
 
-    const kind = this.powerUp.kind;
+    const kind = powerUp.kind;
     this.powerUp = null;
-    this.addScore(POWERUP.score, events);
-    events.push({ type: 'powerUpPickup', kind, score: POWERUP.score });
+    this.addScoreToPlayer(picker.playerIndex, POWERUP.score, events);
+    events.push({ type: 'powerUpPickup', kind, score: POWERUP.score, playerIndex: picker.playerIndex });
 
     switch (kind) {
       case 'star':
-        player.level = Math.min(player.level + 1, 3);
-        player.bulletSpeed = player.level >= 1 ? SPEED.bulletFast : SPEED.bulletSlow;
+        picker.level = Math.min(picker.level + 1, 3);
+        picker.bulletSpeed = picker.level >= 1 ? SPEED.bulletFast : SPEED.bulletSlow;
         break;
       case 'grenade':
         this.destroyAllEnemies();
         break;
       case 'helmet':
-        player.shieldTicks = Math.max(player.shieldTicks, POWERUP.helmetTicks);
+        picker.shieldTicks = Math.max(picker.shieldTicks, POWERUP.helmetTicks);
         break;
       case 'clock':
         for (const t of this.tanks) {
@@ -718,7 +789,7 @@ export class World implements ClassicWorld {
         this.activateShovel();
         break;
       case 'tank':
-        this.lives += 1;
+        this.playerMeta(picker.playerIndex).lives += 1;
         break;
       default:
         throw new Error(`未知道具类型: ${String(kind)}`);
@@ -774,6 +845,7 @@ export class World implements ClassicWorld {
     const tank: TankState = {
       id: this.nextTankId++,
       kind,
+      playerIndex: 0,
       x,
       y,
       dir: Dir.Down,
@@ -807,7 +879,7 @@ export class World implements ClassicWorld {
       if (tank.spawningTicks > 0) tank.spawningTicks -= 1;
       if (tank.moved) tank.trackPhase += 1;
     }
-    this.tanks = this.tanks.filter((t) => t.alive || t.kind === 'player');
+    this.tanks = this.tanks.filter((t) => t.alive || (t.kind === 'player' && !this.playerMeta(t.playerIndex).out));
   }
 
   private checkStageClearOrGameOver(events: SimEvent[]): void {

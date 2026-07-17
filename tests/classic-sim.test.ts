@@ -173,7 +173,7 @@ describe('移动与格点吸附', () => {
 
     for (let i = 0; i < 8; i += 1) world.tick([{ dir: Dir.Right, fire: false }]);
     const beforeTurn = getPlayer(world.snapshot());
-    expect(beforeTurn.x).toBe(PLAYER.spawnCell.col * HALF_SUB + 8 * 12); // 1120，尚未吸附
+    expect(beforeTurn.x).toBe(PLAYER.spawnCells[0].col * HALF_SUB + 8 * 12); // 1120，尚未吸附
     expect(Number.isInteger(beforeTurn.x)).toBe(true);
 
     world.tick([{ dir: Dir.Up, fire: false }]);
@@ -240,7 +240,7 @@ describe('砖块 1/4 掩码销毁（规则5）', () => {
 
   it('3★子弹一击整格摧毁', () => {
     const level = makeLevel({ terrain: { [cellKey(8, 23)]: Terrain.Brick, [cellKey(9, 23)]: Terrain.Brick } });
-    const world = new World({ level, rng: new RNG(1), carryOver: { level: 3, lives: 3, score: 0 } });
+    const world = new World({ level, rng: new RNG(1), carryOver: [{ level: 3, lives: 3, score: 0, out: false }] });
     world.tick([{ dir: null, fire: true }]);
     const snap = world.snapshot();
     expect(snap.terrain[idx(8, 23)]).toBe(Terrain.Empty);
@@ -261,7 +261,7 @@ describe('钢墙碰撞（规则6）', () => {
 
   it('3★子弹整格摧毁钢墙', () => {
     const level = makeLevel({ terrain: { [cellKey(8, 23)]: Terrain.Steel, [cellKey(9, 23)]: Terrain.Steel } });
-    const world = new World({ level, rng: new RNG(1), carryOver: { level: 3, lives: 3, score: 0 } });
+    const world = new World({ level, rng: new RNG(1), carryOver: [{ level: 3, lives: 3, score: 0, out: false }] });
     const events = world.tick([{ dir: null, fire: true }]);
     expect(events.some((e) => e.type === 'steelBreak')).toBe(true);
     expect(world.snapshot().terrain[idx(8, 23)]).toBe(Terrain.Empty);
@@ -478,10 +478,10 @@ describe('玩家死亡重生与关卡通过（规则14）', () => {
       expect(events.some((e) => e.type === 'playerRespawn')).toBe(true);
       const snap = world.snapshot();
       const player = getPlayer(snap);
-      expect(player.x).toBe(PLAYER.spawnCell.col * HALF_SUB);
-      expect(player.y).toBe(PLAYER.spawnCell.row * HALF_SUB);
+      expect(player.x).toBe(PLAYER.spawnCells[0].col * HALF_SUB);
+      expect(player.y).toBe(PLAYER.spawnCells[0].row * HALF_SUB);
       expect(player.level).toBe(0);
-      expect(snap.hud.lives).toBe(PLAYER.initialLives - 1);
+      expect(snap.hud.players[0]?.lives).toBe(PLAYER.initialLives - 1);
       expect(snap.status).toBe('playing');
 
       // 事件坐标须是死亡前（坐标重置前）的位置：机器人主动贴近敌人才会被击杀，
@@ -493,7 +493,8 @@ describe('玩家死亡重生与关卡通过（规则14）', () => {
       expect(Number.isInteger(destroyedEvent?.x)).toBe(true);
       expect(Number.isInteger(destroyedEvent?.y)).toBe(true);
       expect(
-        destroyedEvent?.x !== PLAYER.spawnCell.col * HALF_SUB || destroyedEvent?.y !== PLAYER.spawnCell.row * HALF_SUB,
+        destroyedEvent?.x !== PLAYER.spawnCells[0].col * HALF_SUB
+          || destroyedEvent?.y !== PLAYER.spawnCells[0].row * HALF_SUB,
       ).toBe(true);
       return;
     }
@@ -516,14 +517,14 @@ describe('玩家死亡重生与关卡通过（规则14）', () => {
 describe('计分与额外命（规则13）', () => {
   it('得分跨越 20000 的倍数时获得一条额外命', () => {
     const level = makeLevel({ enemyQueue: ['basic'] });
-    const world = new World({ level, rng: new RNG(5), carryOver: { level: 0, lives: 3, score: 19999 } });
+    const world = new World({ level, rng: new RNG(5), carryOver: [{ level: 0, lives: 3, score: 19999, out: false }] });
     const events = stepBotTowardPoint(world, firstEnemyPoint, 1500, 'toggle');
 
     const extraLifeEvents = events.filter((e) => e.type === 'extraLife');
     expect(extraLifeEvents).toHaveLength(1);
     const snap = world.snapshot();
-    expect(snap.hud.lives).toBe(3 + 1);
-    expect(snap.hud.score).toBe(19999 + 100);
+    expect(snap.hud.players[0]?.lives).toBe(3 + 1);
+    expect(snap.hud.players[0]?.score).toBe(19999 + 100);
   });
 });
 

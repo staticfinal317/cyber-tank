@@ -4,7 +4,7 @@ import { JINGLES, jingleDuration } from '../src/classic/audio/jingles';
 import { MASTER_VOLUME, SOUND_SPECS, resolveSoundId, soundSpecDuration, type SoundId } from '../src/classic/audio/soundSpecs';
 import type { SimEvent } from '../src/classic/core/types';
 
-/* ---------------- 事件 → 音效映射：纯函数，穷举覆盖 SimEvent 全部 15 种 type ---------------- */
+/* ---------------- 事件 → 音效映射：纯函数，穷举覆盖 SimEvent 全部 16 种 type ---------------- */
 
 describe('resolveSoundId：事件到音效名的映射表', () => {
   const cases: ReadonlyArray<{ event: SimEvent; expected: SoundId | null; note: string }> = [
@@ -15,13 +15,14 @@ describe('resolveSoundId：事件到音效名的映射表', () => {
     { event: { type: 'steelBreak', x: 0, y: 0 }, expected: 'steelBreak', note: '钢墙摧毁，比 steelHit 更沉重' },
     { event: { type: 'bulletsCancel', x: 0, y: 0 }, expected: 'metalClink', note: '与 steelHit 共用金属音' },
     { event: { type: 'tankHit', tankId: 1 }, expected: 'tankHit', note: '装甲掉血中频哐声' },
-    { event: { type: 'enemyDestroyed', tankId: 1, kind: 'basic', score: 100, x: 0, y: 0 }, expected: 'explosionSmall', note: '三级爆炸中最轻' },
-    { event: { type: 'playerDestroyed', tankId: 0, x: 0, y: 0 }, expected: 'explosionMedium', note: '三级爆炸中等' },
+    { event: { type: 'enemyDestroyed', tankId: 1, kind: 'basic', score: 100, x: 0, y: 0, byPlayer: 0 }, expected: 'explosionSmall', note: '三级爆炸中最轻' },
+    { event: { type: 'playerDestroyed', tankId: 0, x: 0, y: 0, playerIndex: 0 }, expected: 'explosionMedium', note: '三级爆炸中等' },
     { event: { type: 'baseDestroyed', x: 0, y: 0 }, expected: 'explosionBig', note: '三级爆炸中最重' },
-    { event: { type: 'playerRespawn' }, expected: null, note: '出生已有护盾视觉提示，明确不发声' },
+    { event: { type: 'playerRespawn', playerIndex: 0 }, expected: null, note: '出生已有护盾视觉提示，明确不发声' },
     { event: { type: 'powerUpSpawn', kind: 'star' }, expected: 'powerUpSpawn', note: '上行琶音' },
-    { event: { type: 'powerUpPickup', kind: 'star', score: 500 }, expected: 'powerUpPickup', note: '欢快上行双音' },
-    { event: { type: 'extraLife' }, expected: 'extraLife', note: '欢快上行三连音，更长' },
+    { event: { type: 'powerUpPickup', kind: 'star', score: 500, playerIndex: 0 }, expected: 'powerUpPickup', note: '欢快上行双音' },
+    { event: { type: 'extraLife', playerIndex: 0 }, expected: 'extraLife', note: '欢快上行三连音，更长' },
+    { event: { type: 'playerParalyzed', playerIndex: 1, x: 0, y: 0 }, expected: 'tankHit', note: '[临时] 复用装甲掉血音效，2P 专属音效由 C2/C3 调整' },
     { event: { type: 'stageClear' }, expected: null, note: '由 playJingle 负责，避免双响' },
     { event: { type: 'gameOver' }, expected: null, note: '由 playJingle 负责，避免双响' },
   ];
@@ -30,9 +31,9 @@ describe('resolveSoundId：事件到音效名的映射表', () => {
     expect(resolveSoundId(event)).toBe(expected);
   });
 
-  it('覆盖 SimEvent 联合类型的全部 15 种 type（回归：新增事件必须显式加入映射表）', () => {
+  it('覆盖 SimEvent 联合类型的全部 16 种 type（回归：新增事件必须显式加入映射表）', () => {
     const coveredTypes = new Set(cases.map((c) => c.event.type));
-    expect(coveredTypes.size).toBe(15);
+    expect(coveredTypes.size).toBe(16);
   });
 
   it('steelHit 与 bulletsCancel 共用同一音色（设计要求：均为金属感高频短音）', () => {

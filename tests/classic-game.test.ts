@@ -282,7 +282,7 @@ describe('FixedStepAccumulator · 固定步长累加器（纯逻辑，可在 nod
 /* ==================== ClassicGame.ts：StageKillTally（纯逻辑，可在 node 直接单测） ==================== */
 
 function enemyDestroyed(kind: 'basic' | 'fast' | 'power' | 'armor', score: number): SimEvent {
-  return { type: 'enemyDestroyed', tankId: 1, kind, score, x: 0, y: 0 };
+  return { type: 'enemyDestroyed', tankId: 1, kind, score, x: 0, y: 0, byPlayer: 0 };
 }
 
 describe('StageKillTally · 本关击杀统计（纯逻辑，可独立实例化单测，无 DOM 依赖）', () => {
