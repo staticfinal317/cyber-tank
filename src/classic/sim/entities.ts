@@ -11,6 +11,8 @@ export type TankAxis = 'h' | 'v';
 export interface TankState {
   id: number;
   kind: 'player' | EnemyKind;
+  /** 玩家编号（0=P1，1=P2）；敌人恒 0，仅 kind='player' 时有意义 */
+  playerIndex: number;
   /** 左上角坐标，subpx */
   x: number;
   y: number;
@@ -48,6 +50,8 @@ export interface BulletState {
   fromPlayer: boolean;
   speed: number;
   ownerTankId: number;
+  /** 子弹所有者的玩家编号；敌方子弹恒 0（不参与 owner 归属判定，靠 fromPlayer 区分） */
+  ownerPlayerIndex: number;
   /** 玩家 3 星子弹：钢墙整格摧毁 + 砖墙双倍破坏 */
   maxLevelPlayerBullet: boolean;
   removed: boolean;

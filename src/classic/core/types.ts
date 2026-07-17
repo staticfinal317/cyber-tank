@@ -65,6 +65,8 @@ export interface PlayerInput {
 export interface TankView {
   id: number;
   kind: 'player' | EnemyKind;
+  /** 玩家编号（0=P1，1=P2）；敌人恒 0，仅 kind='player' 时有意义 */
+  playerIndex: number;
   /** 左上角坐标，subpx */
   x: number;
   y: number;
@@ -97,6 +99,14 @@ export interface PowerUpView {
   y: number;
 }
 
+/** 单个玩家的 HUD 视图（数组下标即 playerIndex） */
+export interface PlayerHudView {
+  lives: number;
+  score: number;
+  /** 已出局（命数耗尽且不在场）；UI 灰显用 */
+  out: boolean;
+}
+
 export interface WorldSnapshot {
   tick: number;
   stage: number;
@@ -116,8 +126,8 @@ export interface WorldSnapshot {
   powerUp: PowerUpView | null;
   hud: {
     enemiesRemaining: number; // 尚未出场的敌人数（右栏图标）
-    lives: number;
-    score: number;
+    /** 各玩家命数/得分，长度 = 玩家数 */
+    players: readonly PlayerHudView[];
     stage: number;
   };
 }
@@ -131,12 +141,13 @@ export type SimEvent =
   | { type: 'steelBreak'; x: number; y: number }
   | { type: 'bulletsCancel'; x: number; y: number }
   | { type: 'tankHit'; tankId: number } // 装甲坦克掉血未死
-  | { type: 'enemyDestroyed'; tankId: number; kind: EnemyKind; score: number; x: number; y: number }
-  | { type: 'playerDestroyed'; tankId: number; x: number; y: number }
-  | { type: 'playerRespawn' }
+  | { type: 'enemyDestroyed'; tankId: number; kind: EnemyKind; score: number; x: number; y: number; byPlayer: number }
+  | { type: 'playerDestroyed'; tankId: number; x: number; y: number; playerIndex: number }
+  | { type: 'playerRespawn'; playerIndex: number }
   | { type: 'powerUpSpawn'; kind: PowerUpKind }
-  | { type: 'powerUpPickup'; kind: PowerUpKind; score: number }
-  | { type: 'extraLife' }
+  | { type: 'powerUpPickup'; kind: PowerUpKind; score: number; playerIndex: number }
+  | { type: 'extraLife'; playerIndex: number }
+  | { type: 'playerParalyzed'; playerIndex: number; x: number; y: number } // 被队友子弹命中（FC 原版：玩家子弹冻结另一玩家）
   | { type: 'baseDestroyed'; x: number; y: number }
   | { type: 'stageClear' }
   | { type: 'gameOver' };
@@ -146,8 +157,10 @@ export type SimEvent =
 export interface ClassicWorldOptions {
   level: LevelData;
   rng: RNG;
-  /** 携带上一关的玩家状态（星级/命数/分数）；首关传 undefined */
-  carryOver?: { level: number; lives: number; score: number };
+  /** 玩家数（1 或 2）；默认 1 */
+  playerCount?: 1 | 2;
+  /** 携带上一关的各玩家状态，数组下标即 playerIndex；首关传 undefined */
+  carryOver?: readonly { level: number; lives: number; score: number; out: boolean }[];
 }
 
 /**
@@ -156,7 +169,7 @@ export interface ClassicWorldOptions {
  */
 export interface ClassicWorld {
   readonly status: WorldSnapshot['status'];
-  /** 推进一个 tick（60Hz）。inputs[0] 为 P1；返回本 tick 产生的事件 */
+  /** 推进一个 tick（60Hz）。inputs[playerIndex] 对应各玩家；长度必须 ≥ 玩家数；返回本 tick 产生的事件 */
   tick(inputs: readonly PlayerInput[]): SimEvent[];
   snapshot(): WorldSnapshot;
   /** 关键状态的 FNV-1a 哈希，供确定性回归测试与回放校验 */

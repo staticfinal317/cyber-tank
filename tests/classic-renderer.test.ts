@@ -200,11 +200,11 @@ describe('resolveEffectCenter · 事件坐标(subpx) → 特效中心点(px) 的
 
   it('enemyDestroyed/playerDestroyed/baseDestroyed 均取事件坐标 + 坦克半宽偏移（同一路径，无特殊分支）', () => {
     const enemy = resolveEffectCenter({
-      type: 'enemyDestroyed', tankId: 1, kind: 'basic', score: 100, x: 10 * SUBPX, y: 20 * SUBPX,
+      type: 'enemyDestroyed', tankId: 1, kind: 'basic', score: 100, x: 10 * SUBPX, y: 20 * SUBPX, byPlayer: 0,
     });
     // playerDestroyed/baseDestroyed 走与 enemyDestroyed 完全相同的坐标路径——不再依赖
     // 已删除的"上一帧快照按 tankId 反查"workaround，也不再对 baseDestroyed 硬编码 BASE.cell。
-    const player = resolveEffectCenter({ type: 'playerDestroyed', tankId: 0, x: 10 * SUBPX, y: 20 * SUBPX });
+    const player = resolveEffectCenter({ type: 'playerDestroyed', tankId: 0, x: 10 * SUBPX, y: 20 * SUBPX, playerIndex: 0 });
     const base = resolveEffectCenter({ type: 'baseDestroyed', x: 10 * SUBPX, y: 20 * SUBPX });
 
     const expected = { cx: 10 + TANK_PX / 2, cy: 20 + TANK_PX / 2 };

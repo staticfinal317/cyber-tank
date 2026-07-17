@@ -212,6 +212,9 @@ export function resolveSoundId(event: SimEvent): SoundId | null {
     case 'playerRespawn':
       // 出生已有护盾视觉提示；紧贴 playerDestroyed 的爆炸音之后再叠加音效会显得拥挤，故静音
       return null;
+    case 'playerParalyzed':
+      // [临时] 复用装甲坦克掉血音效；2P 专属音效由 C2/C3 调整
+      return 'tankHit';
     case 'stageClear':
       // 由 playJingle('stageClear') 负责播放，避免与事件音效双响
       return null;

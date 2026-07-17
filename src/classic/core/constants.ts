@@ -95,8 +95,8 @@ export const WAVE = {
 export const PLAYER = {
   /** 备用命数；合计 3 辆与 FC 原版一致（原版 ram_lives 初值为 3，含当前场上这辆） */
   initialLives: 2,
-  /** 出生点半格坐标（col,row）：基地左侧（原版 P1 位置） */
-  spawnCell: { col: 8, row: 24 },
+  /** 出生点半格坐标（col,row），下标即 playerIndex：P1 基地左侧、P2 基地右侧（FC 原版位置） */
+  spawnCells: [{ col: 8, row: 24 }, { col: 16, row: 24 }] as const,
   /**
    * 出生/复活无敌时长。反汇编：sub_E3B8（出生状态机 F0→E0 结束后调用）对玩家写入
    * ram_helmet_timer=3，与 POWERUP.helmetTicks 共用同一计时器、同一 64 帧/单位递减速率
@@ -104,6 +104,18 @@ export const PLAYER = {
    * 首次出生与关内复活均经同一状态机路径，数值一致，无需区分。
    */
   spawnShieldTicks: 192,
+  /**
+   * 队友火力冻结时长（2P 模式，玩家子弹命中另一玩家）。反汇编确认：
+   * sub_E70C_check_bullets_collision_with_player_tanks 内按 bullet_index XOR player_index
+   * 的奇偶性识别"另一玩家的子弹"，命中且 ram_helmet_timer（护盾）为 0 时写入
+   * ram_plr_stun_timer=0xC8(200)（0x0028BA-0x0028BC，00:E8AA-E8AC）；该计时器在
+   * sub_DB75_ice_movement 内按 (frm_cnt_lo&1)||!(frm_cnt_lo&3) 门控递减
+   * （0x001B9B-0x001B9F，00:DB8B-DB8F，与 SPEED.player 注释所述玩家移动门控同一公式，
+   * 每 4 帧执行 3 次），200 次门控命中对应约 200×4/3≈267 帧真实耗时（±1 帧，取决于
+   * 命中瞬间 frm_cnt_lo 相位，无法精确到帧）。冻结期间该 sub 直接跳过方向读取分支，
+   * 与本项目"冻结期不可移动"语义一致。
+   */
+  paralyzedTicks: 267,
   /** 0-1 星同屏 1 发，2 星起 2 发（考据确认） */
   maxBullets: [1, 1, 2, 2] as readonly number[],
   /** 每 20000 分奖 1 命（FC 版，考据确认） */

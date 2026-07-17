@@ -35,6 +35,28 @@ const AI_WEIGHTS: Record<EnemyKind, AiWeights> = {
 /** 顺序对应 [Up, Right, Down, Left]，与 Dir 枚举顺序一致 */
 const DIRS: readonly Dir[] = [Dir.Up, Dir.Right, Dir.Down, Dir.Left];
 
+interface TargetRect { x: number; y: number; w: number; h: number }
+
+/**
+ * 取多个候选目标中离 (fromX, fromY) 直线距离最近者的中心点。
+ * [provisional]：FC 真机按敌方坦克编号分配固定目标，本项目简化为取最近者，
+ * 未按编号还原（考据成本高，见契约"被否方案"）。
+ */
+function nearestTargetCenter(targets: readonly TargetRect[], fromX: number, fromY: number): { cx: number; cy: number } | undefined {
+  let best: { cx: number; cy: number } | undefined;
+  let bestDist = Infinity;
+  for (const t of targets) {
+    const cx = t.x + t.w / 2;
+    const cy = t.y + t.h / 2;
+    const dist = (cx - fromX) ** 2 + (cy - fromY) ** 2;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = { cx, cy };
+    }
+  }
+  return best;
+}
+
 function weightedPickIndex(rng: RNG, weights: readonly number[]): number {
   const total = weights.reduce((sum, w) => sum + w, 0);
   let r = rng.next() * total;
@@ -62,14 +84,16 @@ export function pickEnemyDirection(
   enemyCenterY: number,
   baseCenterX: number,
   baseCenterY: number,
-  playerCenterX: number,
-  playerCenterY: number,
+  playerTargets: readonly TargetRect[],
   rng: RNG,
 ): Dir {
   const w = AI_WEIGHTS[kind];
   const weights: [number, number, number, number] = [w.randomWeight, w.randomWeight, w.randomWeight, w.randomWeight];
   addAxisBias(weights, baseCenterX - enemyCenterX, baseCenterY - enemyCenterY, w.baseBias);
-  addAxisBias(weights, playerCenterX - enemyCenterX, playerCenterY - enemyCenterY, w.playerBias);
+  const nearestPlayer = nearestTargetCenter(playerTargets, enemyCenterX, enemyCenterY);
+  if (nearestPlayer) {
+    addAxisBias(weights, nearestPlayer.cx - enemyCenterX, nearestPlayer.cy - enemyCenterY, w.playerBias);
+  }
   const idx = weightedPickIndex(rng, weights);
   return DIRS[idx] as Dir;
 }
@@ -77,8 +101,6 @@ export function pickEnemyDirection(
 export function enemyReconsiderTicks(kind: EnemyKind): number {
   return AI_WEIGHTS[kind].reconsiderTicks;
 }
-
-interface TargetRect { x: number; y: number; w: number; h: number }
 
 /**
  * 敌方是否与目标（玩家或基地）同行/同列、朝向目标、且视线上 2 半格宽的走廊内无 Steel。
@@ -121,12 +143,13 @@ export function shouldEnemyFire(
   kind: EnemyKind,
   terrain: Uint8Array,
   enemyX: number, enemyY: number, dir: Dir,
-  playerTarget: TargetRect,
+  playerTargets: readonly TargetRect[],
   baseTarget: TargetRect,
   rng: RNG,
 ): boolean {
   const w = AI_WEIGHTS[kind];
-  const aligned = facingClearShot(terrain, enemyX, enemyY, dir, playerTarget)
+  // 空列表（全员出局）时 .some() 恒 false，自然退化为只判定基地，无需特判
+  const aligned = playerTargets.some((t) => facingClearShot(terrain, enemyX, enemyY, dir, t))
     || facingClearShot(terrain, enemyX, enemyY, dir, baseTarget);
   const chance = aligned ? w.fireAlignedChance : w.fireChance;
   return rng.next() < chance;
