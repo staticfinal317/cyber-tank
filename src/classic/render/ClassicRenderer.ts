@@ -66,6 +66,28 @@ function spawnFrameIndex(remainingTicks: number, totalTicks: number, frameCount:
   return Math.min(frameCount - 1, Math.max(0, idx));
 }
 
+/**
+ * 事件坐标（subpx）→ 特效中心点（px）的纯映射，供 ingestEvents 消费，亦单独导出以便在
+ * node 环境直接单测（ClassicRenderer 本体需要浏览器 canvas，无法在 node 实例化）。
+ * brickHit/steelHit 为半格左上角，bulletsCancel 为碰撞点，其余（含 playerDestroyed/
+ * baseDestroyed，均携带左上角坐标）与 enemyDestroyed 同为坦克/基地左上角。
+ */
+export function resolveEffectCenter(event: SimEvent): { cx: number; cy: number } | null {
+  switch (event.type) {
+    case 'brickHit':
+    case 'steelHit':
+      return { cx: subToPx(event.x) + HALF_PX / 2, cy: subToPx(event.y) + HALF_PX / 2 };
+    case 'bulletsCancel':
+      return { cx: subToPx(event.x), cy: subToPx(event.y) };
+    case 'enemyDestroyed':
+    case 'playerDestroyed':
+    case 'baseDestroyed':
+      return { cx: subToPx(event.x) + TANK_PX / 2, cy: subToPx(event.y) + TANK_PX / 2 };
+    default:
+      return null;
+  }
+}
+
 export class ClassicRenderer {
   private readonly container: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
@@ -73,7 +95,6 @@ export class ClassicRenderer {
   private readonly atlas: SpriteAtlas;
   private readonly terrainLayer: TerrainLayer;
   private readonly effects = new EffectQueue();
-  private prevSnapshot: WorldSnapshot | null = null;
 
   constructor(options: ClassicRendererOptions) {
     if (!(options?.container instanceof HTMLElement)) {
@@ -147,15 +168,12 @@ export class ClassicRenderer {
     ctx.drawImage(this.terrainLayer.treesLayer, 0, 0);
 
     this.drawHud(ctx, snapshot);
-
-    this.prevSnapshot = snapshot;
   }
 
   /** 移除 canvas 与内部状态，释放资源；不移除任何监听（本类未注册过监听） */
   dispose(): void {
     this.canvas.remove();
     this.effects.clear();
-    this.prevSnapshot = null;
   }
 
   /* ---------------- 事件 → 特效 ---------------- */
@@ -164,33 +182,9 @@ export class ClassicRenderer {
     for (const event of events) {
       const kind = explosionKindForEvent(event.type);
       if (!kind) continue;
-      const center = this.resolveEffectCenter(event);
+      const center = resolveEffectCenter(event);
       if (!center) continue;
       this.effects.spawn(kind, center.cx, center.cy, tick);
-    }
-  }
-
-  /** 事件坐标为 subpx；brickHit/steelHit 为半格左上角，bulletsCancel 为碰撞点，其余为坦克/基地左上角 */
-  private resolveEffectCenter(event: SimEvent): { cx: number; cy: number } | null {
-    switch (event.type) {
-      case 'brickHit':
-      case 'steelHit':
-        return { cx: subToPx(event.x) + HALF_PX / 2, cy: subToPx(event.y) + HALF_PX / 2 };
-      case 'bulletsCancel':
-        return { cx: subToPx(event.x), cy: subToPx(event.y) };
-      case 'enemyDestroyed':
-        return { cx: subToPx(event.x) + TANK_PX / 2, cy: subToPx(event.y) + TANK_PX / 2 };
-      case 'playerDestroyed': {
-        // playerDestroyed 事件不带坐标，且本 tick 内玩家已重置到出生点：
-        // 用上一帧快照按 tankId 反查死亡前坐标（近似，最多偏差 1 tick 的位移）
-        const prevTank = this.prevSnapshot?.tanks.find((t) => t.id === event.tankId);
-        if (!prevTank) return null;
-        return { cx: subToPx(prevTank.x) + TANK_PX / 2, cy: subToPx(prevTank.y) + TANK_PX / 2 };
-      }
-      case 'baseDestroyed':
-        return { cx: BASE.cell.col * HALF_PX + TANK_PX / 2, cy: BASE.cell.row * HALF_PX + TANK_PX / 2 };
-      default:
-        return null;
     }
   }
 

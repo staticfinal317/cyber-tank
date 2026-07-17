@@ -40,7 +40,8 @@ function buildGrid(overrides: Readonly<Record<string, Terrain>>): string[] {
 /**
  * 默认给一个无关紧要的单敌人队列（而非空数组）：若 enemyQueue 长度为 0，
  * "已出场数(0) >= 总数(0) 且无存活敌人" 在 tick1 就恒成立，会让纯地形/移动类测试
- * 意外在第 1 tick 后立即进入 stageClear（之后所有 tick() 直接短路返回）。
+ * 意外在第 1 tick 后立即进入 stageClear（之后所有 tick() 只推进 tick 计数，不再模拟
+ * 坦克移动/地形交互，见"结算期表现 tick"）。
  * 该敌人生成于左上角(0,0)，远离本文件其余测试的作战/几何区域，可安全忽略。
  *
  * 默认用 BASE.wallCells 铺满基地左/上/右三面砖墙（与真实关卡一致）：出生点 spawnCells[1]
@@ -390,9 +391,71 @@ describe('基地被摧毁（规则9）', () => {
     }
 
     expect(world.status).toBe('gameOver');
-    expect(events.some((e) => e.type === 'baseDestroyed')).toBe(true);
     expect(events.some((e) => e.type === 'gameOver')).toBe(true);
     expect(world.snapshot().baseAlive).toBe(false);
+
+    const baseDestroyedEvent = events.find((e) => e.type === 'baseDestroyed') as
+      | Extract<SimEvent, { type: 'baseDestroyed' }>
+      | undefined;
+    expect(baseDestroyedEvent).toBeDefined();
+    // 事件坐标即基地左上角 subpx（与 enemyDestroyed 同约定），供渲染层直接定位爆炸特效
+    expect(baseDestroyedEvent?.x).toBe(BASE.cell.col * HALF_SUB);
+    expect(baseDestroyedEvent?.y).toBe(BASE.cell.row * HALF_SUB);
+  });
+});
+
+/* ---------------- 结算期"表现 tick"：status 非 playing 时 tick() 只计数、不模拟 ---------------- */
+
+describe('结算期表现 tick（status 非 playing 时 World.tick() 的行为）', () => {
+  it('gameOver 后连续 tick N 次：snapshot.tick 恰好 +N，坦克/子弹/地形/分数全部不变，返回事件恒为空数组', () => {
+    const level = makeLevel();
+    const world = new World({ level, rng: new RNG(1) });
+
+    // 复用"基地被摧毁"用例的打法，制造一次确定性 gameOver
+    for (let i = 0; i < 60; i += 1) world.tick([{ dir: Dir.Up, fire: false }]);
+    for (let i = 0; i < 42; i += 1) world.tick([{ dir: Dir.Right, fire: false }]);
+    for (let i = 0; i < 45; i += 1) world.tick([{ dir: Dir.Down, fire: false }]);
+    for (let i = 0; i < 48 && world.status === 'playing'; i += 1) {
+      world.tick([{ dir: null, fire: i % 2 === 0 }]);
+    }
+    expect(world.status).toBe('gameOver');
+
+    const before = world.snapshot();
+    const N = 10;
+    for (let i = 0; i < N; i += 1) {
+      // 故意传入"看起来有效"的方向+开火输入，验证结算期 tick 确实忽略一切输入
+      const events = world.tick([{ dir: Dir.Up, fire: true }]);
+      expect(events).toEqual([]);
+    }
+
+    const after = world.snapshot();
+    expect(after.tick).toBe(before.tick + N);
+    expect(after.tanks).toEqual(before.tanks);
+    expect(after.bullets).toEqual(before.bullets);
+    expect(after.terrain).toEqual(before.terrain);
+    expect(after.brickMask).toEqual(before.brickMask);
+    expect(after.baseAlive).toBe(before.baseAlive);
+    expect(after.hud).toEqual(before.hud);
+    expect(world.status).toBe('gameOver');
+  });
+
+  it('stageClear 后连续 tick N 次同样只推进 tick 计数：坦克/分数不变，事件恒为空数组', () => {
+    const level = makeLevel({ enemyQueue: ['basic', 'basic', 'basic', 'basic'] });
+    const world = new World({ level, rng: new RNG(3) });
+    stepBotTowardPoint(world, firstEnemyPoint, 6000, 'toggle');
+    expect(world.status).toBe('stageClear');
+
+    const before = world.snapshot();
+    const N = 15;
+    for (let i = 0; i < N; i += 1) {
+      const events = world.tick([{ dir: Dir.Left, fire: true }]);
+      expect(events).toEqual([]);
+    }
+    const after = world.snapshot();
+    expect(after.tick).toBe(before.tick + N);
+    expect(after.tanks).toEqual(before.tanks);
+    expect(after.hud).toEqual(before.hud);
+    expect(world.status).toBe('stageClear');
   });
 });
 
@@ -420,6 +483,18 @@ describe('玩家死亡重生与关卡通过（规则14）', () => {
       expect(player.level).toBe(0);
       expect(snap.hud.lives).toBe(PLAYER.initialLives - 1);
       expect(snap.status).toBe('playing');
+
+      // 事件坐标须是死亡前（坐标重置前）的位置：机器人主动贴近敌人才会被击杀，
+      // 死亡点与出生点（之后 respawn 会重置到此）在几何上不同，用以区分"重置前/后"两种取值来源。
+      const destroyedEvent = events.find((e) => e.type === 'playerDestroyed') as
+        | Extract<SimEvent, { type: 'playerDestroyed' }>
+        | undefined;
+      expect(destroyedEvent).toBeDefined();
+      expect(Number.isInteger(destroyedEvent?.x)).toBe(true);
+      expect(Number.isInteger(destroyedEvent?.y)).toBe(true);
+      expect(
+        destroyedEvent?.x !== PLAYER.spawnCell.col * HALF_SUB || destroyedEvent?.y !== PLAYER.spawnCell.row * HALF_SUB,
+      ).toBe(true);
       return;
     }
     throw new Error(`未能在 ${maxSeed} 个候选种子内（每个预算 ${budget} tick）观察到玩家阵亡后游戏仍在进行`);
