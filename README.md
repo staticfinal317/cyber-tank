@@ -1,6 +1,6 @@
-# 赛博坦克 · 星核远征
+# 坦克大作战
 
-面向 6–12 岁儿童和家庭的 3D Web 坦克协作游戏。第一发布目标明确为“高质量离线家庭版”，不依赖账号或服务器。当前版本包含六个主题场景、11 类普通敌人与区域 Boss、双人同屏、蓝牙手柄、手机/Pad 双摇杆、永久科技树、自研 GLB/PBR 机体、伙伴基地、图鉴、家庭分工、关卡事件、每日挑战、本地荣耀榜与轨迹回放。
+经典像素坦克对战游戏的家庭非商业复刻版。给孩子玩：单人闯关、守护基地，没有账号、没有联网、没有广告。
 
 ## 快速开始
 
@@ -13,62 +13,44 @@ npm run dev
 
 开发地址固定为 `http://127.0.0.1:4317/`；生产预览固定为 `http://127.0.0.1:4318/`。脚本启用了 `strictPort`，端口冲突时会直接提示，避免误打开其他项目。
 
-生产构建与质量检查：
+质量检查与生产构建：
 
 ```bash
 npm run check
 npm run build
-npm run assets:models
 npm run preview
 ```
 
-## 操作
+`npm run check` 依次执行类型检查、单元测试与桌面浏览器 UI 冒烟测试（Playwright）。
 
-- 桌面 P1：WASD / 方向键移动，鼠标瞄准，鼠标左键或空格发射，数字 1–4 使用技能，C 共享标记。
-- 桌面 P2：IJKL 移动，Enter 发射，7–0 使用四项技能，O 换弹，U 使用工具/共享标记；可选领航员、工程师或僚机职责。
-- 蓝牙/USB 手柄：左摇杆移动、右摇杆瞄准、RT/A 发射、肩键与 B/Y 使用技能。浏览器通过标准 Gamepad API 识别。
-- 手机/Pad：左侧动态摇杆移动；右侧发射轮盘支持拖动瞄准；护、修、速、电和工具键均为大触控热区。“Pad 共享车组”允许一位孩子驾驶、另一位负责炮塔/扫描/修复，不需要两只手柄。
+## 键位
 
-首次体验建议选择“轻松 · 自动瞄准”。两台坦克同屏适合 Pad 横屏配合两只蓝牙手柄；无手柄家庭可直接选择“Pad 共享车组”。
-
-## 已实现内容
-
-- Three.js 斜 3D 视角、软阴影、程序化模型、EffectComposer Bloom、后处理色差、动态点光与粒子碎片。
-- 远征、无尽、最后星核（收缩安全区）和每日种子四种模式。
-- 霓虹雨城、云端花园、积木工厂、水晶海沟、恐龙峡谷、极光冰原六个数据驱动主题。
-- 11 类普通机器人采用追击、环绕、蓄力、治疗、隐身、召唤、反射和压制等组合行为；四种区域霸主拥有独立轮廓与弹幕。
-- 护盾、修复、冲刺、电磁风暴；射速、多重、强力、护盾和星屑掉落。
-- 双人倒地重建、蓝牙手柄、多种辅助驾驶档位。
-- 永久星屑、科技树、三台机体、四种武器、儿童成就与正向称号。
-- 日期确定性每日挑战包含独立目标、时限、难度修正、首通奖励与完成记录；另有本机排行榜和最近五场压缩轨迹回放。
-- PWA 离线壳、本地存档、无默认埋点；在线能力通过 Provider 接口隔离。
-- 双份安全存档、损坏恢复、存储空间降级、后台自动暂停与 WebGL 恢复流程。
-- 家庭设置包含音量上限、左右手布局、震动、减少闪光、大字、颜色辅助、瞄准灵敏度与手柄布局。
-- 12 个季节短任务使用可组合任务图；伙伴基地持久化山海谷等级、12 个地标、机器人图鉴、伙伴解锁与羁绊。
-- 自研 GLB 资产脚本生成 High/Balanced/Low 三档 LOD、PBR metallic-roughness 材质和独立炮塔节点；加载失败保留程序几何。
-- 双人家庭分工包含领航标记、工程修复、僚机增伤、Pad 单车组协作和双坦克并肩充能机关。
-- 扫描器、牵引器、光桥和修复臂均接入战斗；伙伴 Perk、压制、真实弹丸反射、天气伤害与四类霸主专属技能由确定性模拟驱动。
+- 移动：方向键 或 WASD
+- 开火：空格 或 J
+- 确认（菜单/开始下一关）：Enter
+- 暂停：Esc 或 P
 
 ## 项目结构
 
 ```text
 src/
-  audio/          程序化 WebAudio 反馈
-  content/        主题、敌人、机体、武器、成就配置
-  core/           游戏编排、类型、随机数、事件总线
-  gameplay/       与渲染解耦的确定性战斗模拟
-  input/          键鼠、触控、Gamepad API 输入归一化
-  persistence/    版本化存档仓库
-  platform/       账号、云榜、挑战、回放、遥测扩展协议
-  render/         Three.js 场景、后处理、模型与特效
-  ui/             DOM HUD、菜单、成长和结果界面
-tests/            单元测试与桌面/Pad Playwright 冒烟测试
-legacy/           原单文件 Canvas 原型，仅作体验对照
-docs/             架构、路线图与技术决策
+  classic/
+    audio/    程序化 WebAudio 8-bit 音效与过场 Jingle，只依赖 core/types 的 SimEvent
+    content/  关卡文本解析与第 1-3 关数据（FC 原版布局转写）
+    core/     架构契约：类型（types.ts）与常量（constants.ts），改动需主线评审
+    game/     顶层编排：FSM 状态机、键盘输入、固定步长循环、菜单/结算界面
+    render/   Canvas 2D 分层渲染器，只读消费 WorldSnapshot/SimEvent
+    sim/      确定性战斗模拟（World/AI/碰撞/地形/哈希回归），零浏览器 API
+  core/
+    RNG.ts    注入式确定性随机数生成器，被 sim 与 core/types 引用
+  main.ts     入口：装配 ClassicGame + ClassicAudio，注册离线 Service Worker
+tests/        单元测试（classic-*.test.ts、rng.test.ts）与 Playwright UI 冒烟测试
+legacy/       历史原型参照，不参与生产构建
+docs/         架构文档与复刻计划
 ```
 
-详细说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 和 [docs/ROADMAP.md](docs/ROADMAP.md)。已批准的“四季山海远征”升级见 [产品规格](docs/FOUR_SEASONS_PRODUCT_SPEC.md) 与 [分阶段开发计划](docs/FOUR_SEASONS_DEVELOPMENT_PLAN.md)。
+详细分层不变式与确定性设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，复刻范围与阶段计划见 [docs/BATTLE_CITY_REMAKE_PLAN.md](docs/BATTLE_CITY_REMAKE_PLAN.md)。
 
 ## 儿童隐私原则
 
-默认版本不要求注册、不上传行为数据、不内置聊天与广告。若以后接入好友榜、班级榜或账号系统，应先实现家长同意、昵称过滤、数据最小化、删除数据入口与地区化儿童隐私合规审查。
+无账号、无行为数据上传、无广告。完全离线可玩，不依赖任何服务器。

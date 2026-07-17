@@ -1,118 +1,56 @@
-# 技术架构与扩展设计
+# 技术架构
 
-## 1. 目标与边界
+## 1. 定位
 
-当前版本定位为“可直接发布测试的离线优先 Web 3D 游戏”。战斗核心不依赖 DOM、Three.js 或云端 SDK，因此可以继续演进为 Web、PWA、桌面壳和轻量原生容器版本。
+「坦克大作战」是经典像素坦克对战游戏的家庭非商业复刻版：单人闯关、Canvas 2D 渲染、无账号、无网络依赖。核心目标是确定性的战斗模拟 + 只读渲染，方便回归测试与后续内容扩展。
 
-核心设计原则：
+## 2. 分层不变式
 
-1. 玩法模拟与呈现解耦：`Simulation` 只处理数值、位置和规则；渲染器消费实体快照。
-2. 内容数据化：主题、敌人、武器、机体和科技节点均为配置，避免在主循环中堆分支。
-3. 输入归一化：键鼠、触控与 Gamepad 最终输出同一 `ControlFrame`。
-4. 离线优先、云端可插拔：本地存档实现 `SaveRepository`；账号、云榜、挑战和回放使用 Provider 协议。
-5. 儿童安全默认开启：无账号、无聊天、无广告、无远程遥测，失败也保留成长资源。
+以下约束在 `src/classic/core/types.ts` 与各模块文件头注释中标注为架构契约，改动需要评审：
 
-## 2. 运行时分层
+1. **模拟确定性**：`src/classic/sim/` 只依赖 `core/types.ts`、`core/constants.ts` 与注入的 `RNG`（`src/core/RNG.ts`）；零浏览器 API、零 `Math.random()`、零 `Date.now()`。所有坐标为整数 subpx（见 `constants.SUBPX`），保证同一输入序列在任意环境下产生完全一致的输出。
+2. **渲染只读快照**：`src/classic/render/ClassicRenderer.ts` 只消费 `WorldSnapshot` 与 `SimEvent`，不 import `sim/` 任何模块、不访问模拟内部状态。渲染循环（rAF）由上层持有，渲染器被动响应 `render()`/`resize()`/`dispose()`。
+3. **事件驱动音频**：`src/classic/audio/ClassicAudio.ts` 只依赖 `core/types` 的 `SimEvent` 类型，不 import `sim`/`render`/`game` 任何模块。数据（音符表、包络参数，见 `soundSpecs.ts`、`jingles.ts`）与 WebAudio 调用（`ClassicAudio.ts`）分离；无 WebAudio 环境（如 Node 测试）时静默为空实现。
+4. **编排层瘦身**：`src/classic/game/ClassicGame.ts` 是薄的副作用编排层，持有 `World`（模拟）/ `ClassicRenderer`（渲染）/ `KeyboardController`（输入）/ `ScreensOverlay`（界面）/ `GameLoop`（固定步长循环），把纯逻辑的 FSM 转移映射为具体的舞台切换，本身不包含战斗规则。
 
-```mermaid
-flowchart LR
-  A[键鼠 / 触控 / 手柄] --> B[InputManager]
-  B --> C[ControlFrame]
-  C --> D[Simulation]
-  E[内容配置] --> D
-  D --> F[ThreeRenderer]
-  D --> G[UIController]
-  D --> H[Replay Frames]
-  G --> I[Game 编排]
-  I --> J[SaveRepository]
-  J --> K[localStorage]
-  I -.可选.-> L[Cloud Providers]
-```
-
-`Game` 负责生命周期和跨层编排；它不包含具体敌人 AI 或 3D 建模代码。未来增加联网房间时，可保留 `Simulation` 作为权威规则层，在 Worker 或服务器中运行。
-
-## 3. 固定时间步与确定性
-
-当前模拟按渲染帧更新，但将单次步长限制为 33ms，避免切换标签页后产生穿透。每日挑战和敌人生成使用独立的 Xorshift RNG；同一日期可得到相同生成序列。
-
-下一阶段若实现竞技回放或联网同步，应改为 60Hz 固定 Tick：
-
-- 客户端只提交输入帧，不提交位置结果。
-- 回放保存 `seed + input frames + contentVersion`，替代目前用于儿童复盘的 10Hz 位置轨迹。
-- 服务器或 Web Worker 复算世界状态，并对关键 Tick 做哈希校验。
-
-## 4. 内容扩展方式
-
-### 新增敌人
-
-1. 在 `core/types.ts` 扩展 `EnemyKind`。
-2. 在 `content/enemies.ts` 增加数值配置。
-3. 在 `Simulation.updateEnemies` 注册独特行为；通用追踪、射击和碰撞无需修改。
-4. 在 `ThreeRenderer.createEnemy` 增加程序化外形或接入 glTF 模型工厂。
-
-若敌人超过约 20 种，应把 AI 改为行为组件组合，例如 `SeekTarget`、`KeepDistance`、`BurstFire`、`HealAlly`，避免继续增加条件分支。
-
-### 新增主题
-
-在 `content/themes.ts` 增加一条 `ThemeDefinition`，再向 `addThemeProps` 注册场景装饰。主题玩法机制应实现为 `ThemeRule` 插件，接口建议为：
-
-```ts
-interface ThemeRule {
-  onStart(world: Simulation): void;
-  update(world: Simulation, dt: number): void;
-  onStop(world: Simulation): void;
-}
-```
-
-### 新增武器与机体
-
-数值在 `content/weapons.ts`、`content/chassis.ts` 中声明。下一阶段可将射弹行为拆成 `WeaponStrategy`，实现追踪、弹射、持续光束、地雷和召唤无人机，而不修改玩家控制器。
-
-## 5. 渲染架构
-
-当前渲染管线：
+## 3. 目录职责
 
 ```text
-WebGLRenderer → RenderPass → UnrealBloomPass → Chromatic ShaderPass → OutputPass
+src/classic/
+  core/     架构契约：types.ts（方向/地形/实体视图/事件类型）、constants.ts（网格、定点数、tick 速率等全局常量）
+  sim/      确定性战斗模拟：World（权威状态与 tick）、ai.ts（敌人行为）、collide.ts（碰撞）、
+            terrain.ts（地形/破坏）、entities.ts（实体工厂）、hash.ts（FNV-1a 状态哈希，回归测试用）
+  content/  关卡文本解析（parseLevel.ts）与第 1-3 关数据（levels.ts，FC 原版布局转写，来源见文件头注释）
+  game/     顶层编排：fsm.ts（纯逻辑状态机）、keyboard.ts（键盘输入归一化）、loop.ts（固定步长主循环）、
+            screens.ts（菜单/结算界面）、ClassicGame.ts（装配以上各层）
+  render/   Canvas 2D 分层渲染：ClassicRenderer.ts（主渲染器）、sprites.ts（精灵图集）、
+            terrainLayer.ts（地形层缓存）、effects.ts（特效队列）、digits.ts（数字精灵）、
+            dirty.ts（脏矩形/脏格计算）、layout.ts（逻辑分辨率与缩放布局）
+  audio/    程序化 WebAudio 音效：ClassicAudio.ts（合成与调度）、soundSpecs.ts（音色参数表）、
+            jingles.ts（过场音乐数据）
+src/core/
+  RNG.ts    注入式确定性随机数生成器（Xorshift），被 sim 与 core/types 引用；仓库内唯一保留的旧目录文件
+src/main.ts 入口：装配 ClassicGame + ClassicAudio，处理 AudioContext 用户手势解锁，注册离线 Service Worker
 ```
 
-- 实体使用 `id → Object3D` 映射做增量同步。
-- 粒子使用短生命周期对象池思路；正式量产版应切换到 InstancedMesh 或 GPU 粒子。
-- 六个主题全部使用程序化几何，因此首包无需下载外部素材。
-- 动态点光只用于爆炸和枪口，保持短生命周期，避免移动端实时光源过多。
+## 4. 确定性设计
 
-建议性能预算：
+- **定点数**：逻辑坐标以 subpx（1 逻辑像素 = 16 subpx）整数存储与运算，模拟内不出现浮点坐标，避免跨平台浮点误差导致的轨迹漂移。棋盘为 26×26 半格（`GRID`），对应逻辑分辨率 208×208 px。
+- **注入 RNG**：`World` 与 `ai.ts` 的随机行为（敌人生成点、AI 决策分支等）通过构造参数注入 `RNG` 实例，不直接调用全局随机源；相同 seed 输入相同 tick 序列必然复现相同结果。
+- **固定步长 tick**：`FixedStepAccumulator`（`game/loop.ts`）以 60Hz（`TICK_RATE`）步长驱动模拟，单帧最多补 5 个 tick，超额时间直接丢弃，避免长时间后台切回后的补 tick 死亡螺旋，同时保证模拟推进节奏与真实时间解耦。
+- **哈希回归**：`sim/hash.ts` 实现 FNV-1a 32 位哈希，`World` 对 tick 数、地形、砖块掩码、坦克与子弹的全部字段、比分与状态做逐字段哈希（见 `World.ts` 中 `fnvInt32`/`fnvByte`/`fnvBool`/`fnvBytes` 的调用序列）。回归测试可用该哈希比对同一输入序列在代码改动前后是否产生完全一致的模拟状态，快速发现无意的行为变化。
 
-| 档位 | 目标设备 | 分辨率比例 | Bloom | 阴影 | 同屏实体 |
-|---|---|---:|---|---|---:|
-| Battery | 中低端手机 | 0.75 | 关闭 | 关闭 | 35 |
-| Balanced | 主流手机/Pad | 1.0 | 低 | 512 | 55 |
-| High | 桌面/高端 Pad | 1.25–1.75 | 高 | 1024 | 80 |
+## 5. 测试策略
 
-应通过帧时间移动平均自动降级，升级需延迟 10 秒，避免画质来回跳变。
+- `tests/rng.test.ts`：`RNG`/`seedFromDate` 的纯函数测试。
+- `tests/classic-sim.test.ts`：`World` 的模拟正确性（碰撞、地形破坏、道具、结冰等）。
+- `tests/classic-levels.test.ts`：关卡解析与数据校验。
+- `tests/classic-renderer.test.ts` / `tests/classic-sprites.test.ts`：渲染层布局、脏格计算与精灵图集的单元测试。
+- `tests/classic-audio.test.ts`：音效参数与 Jingle 时长的单元测试。
+- `tests/classic-game.test.ts`：FSM 转移、键盘输入归一化、固定步长循环的纯逻辑测试。
+- `tests/pwa.test.ts`：`vite.config.ts` 中 Service Worker 源码生成逻辑的测试。
+- `tests/ui_smoke.mjs`（经 `tests/with_server.py` 拉起开发服务器）：Playwright 驱动的浏览器 UI 冒烟测试。
 
-## 6. 存档与在线服务
+## 6. 复刻范围与阶段计划
 
-`SaveData.version` 当前为 3。`LocalSaveRepository.normalizeSave()` 为 v2、损坏字段和未来缺省字段提供白名单迁移；新增字段必须提供默认值，不能假设旧存档已经拥有。v3 增加装配方案、四季远征、伙伴世界、舒适度设置和每日挑战完成记录。排行榜保留 20 条，回放保留 5 条且最多 3600 帧，防止 localStorage 无界增长。
-
-一局结束时由 `settleRun()` 先在内存中生成完整的新存档（基础奖励、任务、每日首通、世界经验、图鉴、羁绊、成就、排行榜和归零回放），仓库只执行一次持久化写入，避免页面退出造成部分结算。
-
-在线扩展位于 `platform/providers.ts`：
-
-- `IdentityProvider`：家长同意后的身份。
-- `LeaderboardProvider`：好友、班级、全球榜。
-- `ChallengeProvider`：服务器签名的每日规则。
-- `ReplayProvider`：回放上传与分享。
-- `TelemetryProvider`：默认实现为空，必须显式启用。
-
-建议后端采用带行级权限的数据服务，客户端永远不能直接写排行榜最终分数；应提交签名回放或关卡摘要，由服务端校验后入榜。
-
-## 7. 面向未来的拆分时机
-
-保持当前单前端仓库，直到出现以下任一信号：
-
-- 需要真实在线排行榜、跨设备进度或家庭账号。
-- 需要远程内容配置、赛季与活动日历。
-- 需要多人联网或反作弊校验。
-
-届时迁移为工作区：`apps/web`、`apps/admin`、`services/game-api`、`packages/simulation`、`packages/content-schema`、`packages/protocol`。优先把 `Simulation` 抽成无浏览器依赖包，再增加服务器。
+详见 [docs/BATTLE_CITY_REMAKE_PLAN.md](BATTLE_CITY_REMAKE_PLAN.md)。
