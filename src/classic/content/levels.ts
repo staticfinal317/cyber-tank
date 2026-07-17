@@ -12,8 +12,15 @@
  *   第 1 关：Basic 18 / Strike(=fast) 2 / Medium(=power) 0 / Heavy(=armor) 0
  *   第 2 关：Basic 14 / Strike 4 / Medium 0 / Heavy 2
  *   第 3 关：Basic 14 / Strike 4 / Medium 0 / Heavy 2
- *   与 newagebegins 复刻的敌人类型数量逐一吻合（两独立来源交叉确认，仅计数一致，
- *   队列内的具体出场顺序 GameFAQs 未给出，沿用 newagebegins 数组顺序 [provisional]）。
+ *   与 newagebegins 复刻的敌人类型数量逐一吻合（两独立来源交叉确认，仅计数一致）。
+ * 敌人出场顺序权威确认：cyneprepou4uk/NES-Games-Disassembly（bank_FF.asm）
+ *   tbl_E4EC_stage_enemies（每关 4 个类型字节，按 Basic/Fast/Power/Armor 槽位排列）
+ *   与 tbl_E578_stage_enemies_type_counter（对应每类型出场只数），经 sub_E42B_
+ *   prepare_enemy_tanks_for_stage 初始化、sub_E3B8 按槽位顺序依次消费——
+ *   即原版出场序为「按类型分组、按表内槽位顺序」而非随机交错。
+ *   第 1 关 = [Basic×18, Fast×2]；第 2 关 = [Armor×2, Fast×4, Basic×14]（Power 计数为 0，跳过）；
+ *   第 3 关 = [Basic×14, Fast×4, Armor×2]（Power 计数为 0，跳过）——
+ *   与下方 STAGE_N_ENEMIES 数组逐字节比对完全一致，故沿用 newagebegins 顺序无需改动。
  */
 import type { LevelData } from '../core/types';
 import { parseLevel } from './parseLevel';
@@ -46,7 +53,7 @@ SS..BBBB..........BBBB..SS
 ...........B..B...........
 ...........B..B...........`;
 
-// 第 1 关：18 basic + 2 fast（GameFAQs 逐字确认）
+// 第 1 关：18 basic + 2 fast（GameFAQs 计数确认 + 反汇编 tbl_E4EC/E578 顺序确认）
 const STAGE_1_ENEMIES = [
   'basic', 'basic', 'basic', 'basic', 'basic', 'basic', 'basic', 'basic', 'basic',
   'basic', 'basic', 'basic', 'basic', 'basic', 'basic', 'basic', 'basic', 'basic',
@@ -81,7 +88,7 @@ SSBB..SS..BB..BB......BB..
 ..BB..BB...B..B...BBBBBB..
 ..BB..BB...B..B...BBBBBB..`;
 
-// 第 2 关：14 basic + 4 fast + 2 armor（GameFAQs 逐字确认）
+// 第 2 关：2 armor + 4 fast + 14 basic（GameFAQs 计数确认 + 反汇编 tbl_E4EC/E578 顺序确认）
 const STAGE_2_ENEMIES = [
   'armor', 'armor', 'fast', 'fast', 'fast', 'fast',
   'basic', 'basic', 'basic', 'basic', 'basic', 'basic', 'basic',
@@ -116,7 +123,7 @@ BBBB..S....BBBB...........
 SSBBBB.....B..B...BB......
 SSBBBB.....B..B...BB......`;
 
-// 第 3 关：14 basic + 4 fast + 2 armor（GameFAQs 逐字确认）
+// 第 3 关：14 basic + 4 fast + 2 armor（GameFAQs 计数确认 + 反汇编 tbl_E4EC/E578 顺序确认）
 const STAGE_3_ENEMIES = [
   'basic', 'basic', 'basic', 'basic', 'basic', 'basic', 'basic',
   'basic', 'basic', 'basic', 'basic', 'basic', 'basic', 'basic',
