@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GRID } from '../src/classic/core/constants';
+import { GRID, HALF_PX, SUBPX, TANK_PX } from '../src/classic/core/constants';
 import { FX } from '../src/classic/core/constants';
 import { computeLayout, LOGICAL_HEIGHT, LOGICAL_WIDTH } from '../src/classic/render/layout';
 import { cellCol, cellRow, diffDirtyCells } from '../src/classic/render/dirty';
@@ -11,7 +11,7 @@ import {
   isEffectExpired,
   makeEffect,
 } from '../src/classic/render/effects';
-import { ClassicRenderer } from '../src/classic/render/ClassicRenderer';
+import { ClassicRenderer, resolveEffectCenter } from '../src/classic/render/ClassicRenderer';
 
 describe('computeLayout · 整数缩放与居中偏移', () => {
   it('容器恰为逻辑分辨率整数倍时：scale 精确匹配，offset 为 0', () => {
@@ -181,6 +181,43 @@ describe('DIGIT_GLYPHS · 内置 3×5 像素数字字体', () => {
 
   it('恰好覆盖 0-9 共 10 个字形，不多不少', () => {
     expect(Object.keys(DIGIT_GLYPHS).sort()).toEqual(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
+  });
+});
+
+describe('resolveEffectCenter · 事件坐标(subpx) → 特效中心点(px) 的纯映射', () => {
+  it('brickHit/steelHit：换算为半格左上角 + 半格中心偏移', () => {
+    const center = resolveEffectCenter({ type: 'brickHit', x: 2 * SUBPX, y: 3 * SUBPX });
+    expect(center).toEqual({ cx: 2 + HALF_PX / 2, cy: 3 + HALF_PX / 2 });
+
+    const steelCenter = resolveEffectCenter({ type: 'steelHit', x: 4 * SUBPX, y: 5 * SUBPX });
+    expect(steelCenter).toEqual({ cx: 4 + HALF_PX / 2, cy: 5 + HALF_PX / 2 });
+  });
+
+  it('bulletsCancel：直接使用碰撞点坐标，不做偏移', () => {
+    const center = resolveEffectCenter({ type: 'bulletsCancel', x: 5 * SUBPX, y: 7 * SUBPX });
+    expect(center).toEqual({ cx: 5, cy: 7 });
+  });
+
+  it('enemyDestroyed/playerDestroyed/baseDestroyed 均取事件坐标 + 坦克半宽偏移（同一路径，无特殊分支）', () => {
+    const enemy = resolveEffectCenter({
+      type: 'enemyDestroyed', tankId: 1, kind: 'basic', score: 100, x: 10 * SUBPX, y: 20 * SUBPX,
+    });
+    // playerDestroyed/baseDestroyed 走与 enemyDestroyed 完全相同的坐标路径——不再依赖
+    // 已删除的"上一帧快照按 tankId 反查"workaround，也不再对 baseDestroyed 硬编码 BASE.cell。
+    const player = resolveEffectCenter({ type: 'playerDestroyed', tankId: 0, x: 10 * SUBPX, y: 20 * SUBPX });
+    const base = resolveEffectCenter({ type: 'baseDestroyed', x: 10 * SUBPX, y: 20 * SUBPX });
+
+    const expected = { cx: 10 + TANK_PX / 2, cy: 20 + TANK_PX / 2 };
+    expect(enemy).toEqual(expected);
+    expect(player).toEqual(expected);
+    expect(base).toEqual(expected);
+  });
+
+  it('无对应特效的事件类型（fire/tankHit/stageClear 等）返回 null', () => {
+    expect(resolveEffectCenter({ type: 'fire', fromPlayer: true })).toBeNull();
+    expect(resolveEffectCenter({ type: 'tankHit', tankId: 1 })).toBeNull();
+    expect(resolveEffectCenter({ type: 'stageClear' })).toBeNull();
+    expect(resolveEffectCenter({ type: 'gameOver' })).toBeNull();
   });
 });
 

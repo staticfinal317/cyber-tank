@@ -190,9 +190,9 @@ export class World implements ClassicWorld {
 
   tick(inputs: readonly PlayerInput[]): SimEvent[] {
     if (inputs.length === 0) throw new Error('tick() 至少需要 1 个 PlayerInput（inputs[0]=P1）');
+    this.tickCount += 1;
     if (this._status !== 'playing') return [];
 
-    this.tickCount += 1;
     const events: SimEvent[] = [];
     const playerInput = inputs[0] as PlayerInput;
 
@@ -505,7 +505,7 @@ export class World implements ClassicWorld {
       if (this.baseAlive && rectsOverlap(nx, ny, BULLET_SUB, BULLET_SUB, baseRect.x, baseRect.y, baseRect.w, baseRect.h)) {
         this.baseAlive = false;
         this._status = 'gameOver';
-        events.push({ type: 'baseDestroyed' });
+        events.push({ type: 'baseDestroyed', x: baseRect.x, y: baseRect.y });
         events.push({ type: 'gameOver' });
         bullet.removed = true;
         continue;
@@ -633,7 +633,7 @@ export class World implements ClassicWorld {
 
   private destroyPlayer(events: SimEvent[]): void {
     const player = this.getPlayerTank();
-    events.push({ type: 'playerDestroyed', tankId: player.id });
+    events.push({ type: 'playerDestroyed', tankId: player.id, x: player.x, y: player.y });
     player.level = 0;
     this.lives -= 1;
     if (this.lives < 0) {

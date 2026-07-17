@@ -16,8 +16,8 @@ describe('resolveSoundId：事件到音效名的映射表', () => {
     { event: { type: 'bulletsCancel', x: 0, y: 0 }, expected: 'metalClink', note: '与 steelHit 共用金属音' },
     { event: { type: 'tankHit', tankId: 1 }, expected: 'tankHit', note: '装甲掉血中频哐声' },
     { event: { type: 'enemyDestroyed', tankId: 1, kind: 'basic', score: 100, x: 0, y: 0 }, expected: 'explosionSmall', note: '三级爆炸中最轻' },
-    { event: { type: 'playerDestroyed', tankId: 0 }, expected: 'explosionMedium', note: '三级爆炸中等' },
-    { event: { type: 'baseDestroyed' }, expected: 'explosionBig', note: '三级爆炸中最重' },
+    { event: { type: 'playerDestroyed', tankId: 0, x: 0, y: 0 }, expected: 'explosionMedium', note: '三级爆炸中等' },
+    { event: { type: 'baseDestroyed', x: 0, y: 0 }, expected: 'explosionBig', note: '三级爆炸中最重' },
     { event: { type: 'playerRespawn' }, expected: null, note: '出生已有护盾视觉提示，明确不发声' },
     { event: { type: 'powerUpSpawn', kind: 'star' }, expected: 'powerUpSpawn', note: '上行琶音' },
     { event: { type: 'powerUpPickup', kind: 'star', score: 500 }, expected: 'powerUpPickup', note: '欢快上行双音' },
@@ -173,7 +173,7 @@ describe('ClassicAudio：无 WebAudio 环境下的降级路径', () => {
   it('unlock 前调用 handleEvents/playJingle 静默忽略，不抛错', () => {
     expect(() => {
       const audio = new ClassicAudio();
-      audio.handleEvents([{ type: 'baseDestroyed' }]);
+      audio.handleEvents([{ type: 'baseDestroyed', x: 0, y: 0 }]);
       audio.playJingle('gameOver');
     }).not.toThrow();
   });

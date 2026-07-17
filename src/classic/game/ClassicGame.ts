@@ -4,15 +4,13 @@
  * 薄的副作用编排层：持有 World（战斗模拟）/ ClassicRenderer（渲染）/ KeyboardController（输入）/
  * ScreensOverlay（界面）/ GameLoop（固定步长循环），并把纯逻辑的 FSM 转移映射为具体的舞台切换。
  *
- * 【已知接口缺口】World.tick() 在 status 变为非 'playing' 后会直接短路返回 []，且不再推进
- * tickCount（见 sim/World.ts 的 `if (this._status !== 'playing') return [];`）。这意味着结算前
- * 180 tick 的"看爆炸/结算动画"延迟无法通过继续调用 world.tick() 来驱动——快照会冻结在同一帧。
- * 本层因此把该延迟实现为 ClassicGame 自身的 tick 计数器（resultDelayTicks），延迟期间不再调用
- * world.tick()/renderer.render()，画面保持在 status 刚变化那一帧的最终定格。若未来希望在延迟期间
- * 播放逐帧特效，需要在 World 或 Renderer 层新增"允许 status 非 playing 时继续推进特效计时"的能力，
- * 但这超出本任务"不修改 sim/render"的约束，故仅记录、不擅自更改。
+ * World.tick() 在 status 变为非 'playing' 后仍会推进 tickCount（"表现 tick"：只计数、不模拟任何
+ * 实体，恒返回空事件数组），因此结算前 180 tick 的"看爆炸/结算动画"延迟（resultDelayTicks）期间，
+ * 本层继续以中性输入调用 world.tick() + renderer.render()，让爆炸特效与地形动画（如水面）随
+ * snapshot.tick 正常播放完，而不是把画面定格在 status 刚变化的那一帧。结算数据（分数/命数/星级）
+ * 仍在 status 翻转的那一帧采样进 finalSnapshot，供 finishStage 使用，不受后续表现 tick 影响。
  */
-import type { ClassicWorld, LevelData, SimEvent, WorldSnapshot } from '../core/types';
+import type { ClassicWorld, LevelData, PlayerInput, SimEvent, WorldSnapshot } from '../core/types';
 import { TICK_RATE } from '../core/constants';
 import { CLASSIC_LEVELS } from '../content/levels';
 import { RNG } from '../../core/RNG';
@@ -25,6 +23,9 @@ import { ScreensOverlay } from './screens';
 
 /** 结算前延迟：让爆炸/结算动画的最后一帧多停留一会儿再切结算屏 [provisional 节奏] */
 const RESULT_DELAY_TICKS = 180;
+
+/** 结算延迟期间喂给 world.tick() 的中性输入：status 已非 playing，World 不会用它模拟任何实体 */
+const NEUTRAL_INPUT: PlayerInput = { dir: null, fire: false };
 
 /** 过场屏展示时长：约 2 秒 */
 const STAGE_INTRO_TICKS = 2 * TICK_RATE;
@@ -65,6 +66,7 @@ export class ClassicGame {
     this.loop = new GameLoop(() => this.onTick());
     this.fsmState = createInitialFsmState(CLASSIC_LEVELS.length);
     window.addEventListener('resize', this.handleResize);
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
   }
 
   /** 进入标题菜单并启动 rAF 主循环 */
@@ -79,10 +81,22 @@ export class ClassicGame {
     this.screens.dispose();
     this.renderer.dispose();
     window.removeEventListener('resize', this.handleResize);
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
   }
 
   private handleResize = (): void => {
     this.renderer.resize();
+  };
+
+  /**
+   * 切后台自动暂停：与 Esc 走完全相同的入暂停路径；回前台保持暂停，等玩家手动恢复。
+   * FSM 停留 'playing' 也覆盖了结算延迟期（resultDelayTicks 递减、world.status 已非 'playing'
+   * 的那段时间），但设计明确排除结算延迟，故额外要求 world.status 仍为 'playing'。
+   */
+  private handleVisibilityChange = (): void => {
+    if (document.hidden && this.fsmState.kind === 'playing' && this.world?.status === 'playing') {
+      this.dispatch({ type: 'togglePause' });
+    }
   };
 
   private handleMenuAction(action: MenuAction): void {
@@ -131,8 +145,8 @@ export class ClassicGame {
       this.renderer.render(snapshot, events);
       this.options.onEvents?.(events);
       if (world.status !== 'playing') {
-        // 见文件头【已知接口缺口】：status 一旦变化，world.tick() 之后就是空操作，
-        // 故从此刻起改由本层的 resultDelayTicks 计数，不再调用 world.tick()。
+        // status 翻转的这一帧：定格结算数据供 finishStage 使用；此后继续调用 world.tick()
+        // 只推进"表现 tick"（见文件头），画面据此继续播放爆炸/地形动画。
         this.finalSnapshot = snapshot;
         this.resultDelayTicks = RESULT_DELAY_TICKS;
       }
@@ -141,6 +155,10 @@ export class ClassicGame {
 
     if (this.resultDelayTicks > 0) {
       this.resultDelayTicks -= 1;
+      const events = world.tick([NEUTRAL_INPUT]);
+      const snapshot = world.snapshot();
+      this.renderer.render(snapshot, events);
+      this.options.onEvents?.(events);
       return;
     }
     this.finishStage(world.status);

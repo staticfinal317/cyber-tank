@@ -132,12 +132,12 @@ export type SimEvent =
   | { type: 'bulletsCancel'; x: number; y: number }
   | { type: 'tankHit'; tankId: number } // 装甲坦克掉血未死
   | { type: 'enemyDestroyed'; tankId: number; kind: EnemyKind; score: number; x: number; y: number }
-  | { type: 'playerDestroyed'; tankId: number }
+  | { type: 'playerDestroyed'; tankId: number; x: number; y: number }
   | { type: 'playerRespawn' }
   | { type: 'powerUpSpawn'; kind: PowerUpKind }
   | { type: 'powerUpPickup'; kind: PowerUpKind; score: number }
   | { type: 'extraLife' }
-  | { type: 'baseDestroyed' }
+  | { type: 'baseDestroyed'; x: number; y: number }
   | { type: 'stageClear' }
   | { type: 'gameOver' };
 
