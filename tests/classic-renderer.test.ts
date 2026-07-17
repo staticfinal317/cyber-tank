@@ -11,7 +11,13 @@ import {
   isEffectExpired,
   makeEffect,
 } from '../src/classic/render/effects';
-import { ClassicRenderer, resolveEffectCenter } from '../src/classic/render/ClassicRenderer';
+import {
+  ClassicRenderer,
+  resolveEffectCenter,
+  resolveLifeRows,
+  resolveTankSpriteKey,
+} from '../src/classic/render/ClassicRenderer';
+import { Dir, type PlayerHudView, type TankView } from '../src/classic/core/types';
 
 describe('computeLayout · 整数缩放与居中偏移', () => {
   it('容器恰为逻辑分辨率整数倍时：scale 精确匹配，offset 为 0', () => {
@@ -218,6 +224,96 @@ describe('resolveEffectCenter · 事件坐标(subpx) → 特效中心点(px) 的
     expect(resolveEffectCenter({ type: 'tankHit', tankId: 1 })).toBeNull();
     expect(resolveEffectCenter({ type: 'stageClear' })).toBeNull();
     expect(resolveEffectCenter({ type: 'gameOver' })).toBeNull();
+  });
+
+  it('D7：playerParalyzed 取事件坐标 + 坦克半宽偏移，与 playerDestroyed 同一路径', () => {
+    const paralyzed = resolveEffectCenter({ type: 'playerParalyzed', playerIndex: 1, x: 10 * SUBPX, y: 20 * SUBPX });
+    expect(paralyzed).toEqual({ cx: 10 + TANK_PX / 2, cy: 20 + TANK_PX / 2 });
+  });
+});
+
+/* ---------------- D5：P2 帧集选择逻辑 ---------------- */
+
+function makePlayerTank(overrides: Partial<TankView> = {}): TankView {
+  return {
+    id: 1,
+    kind: 'player',
+    playerIndex: 0,
+    x: 0,
+    y: 0,
+    dir: Dir.Up,
+    level: 0,
+    hp: 1,
+    flashing: false,
+    shieldTicks: 0,
+    frozenTicks: 0,
+    spawningTicks: 0,
+    trackPhase: 0,
+    ...overrides,
+  };
+}
+
+function makeEnemyTank(overrides: Partial<TankView> = {}): TankView {
+  return {
+    id: 2,
+    kind: 'basic',
+    playerIndex: 0,
+    x: 0,
+    y: 0,
+    dir: Dir.Up,
+    level: 0,
+    hp: 1,
+    flashing: false,
+    shieldTicks: 0,
+    frozenTicks: 0,
+    spawningTicks: 0,
+    trackPhase: 0,
+    ...overrides,
+  };
+}
+
+describe('resolveTankSpriteKey · D5 玩家精灵按 playerIndex 选帧', () => {
+  it('playerIndex===0：与改动前完全一致，取 tank.player.lN', () => {
+    for (const level of [0, 1, 2, 3] as const) {
+      expect(resolveTankSpriteKey(makePlayerTank({ playerIndex: 0, level }), 0)).toBe(`tank.player.l${level}`);
+    }
+  });
+
+  it('playerIndex===1：取 P2 绿色帧集 tank.player2.lN', () => {
+    for (const level of [0, 1, 2, 3] as const) {
+      expect(resolveTankSpriteKey(makePlayerTank({ playerIndex: 1, level }), 0)).toBe(`tank.player2.l${level}`);
+    }
+  });
+
+  it('敌人渲染路径完全不变（flashing/armor hp 选帧逻辑照旧，不受 P2 改动影响）', () => {
+    expect(resolveTankSpriteKey(makeEnemyTank({ kind: 'basic' }), 0)).toBe('tank.enemy.basic');
+    expect(resolveTankSpriteKey(makeEnemyTank({ kind: 'armor', hp: 2 }), 0)).toBe('tank.enemy.armor.hp2');
+    expect(resolveTankSpriteKey(makeEnemyTank({ kind: 'power', flashing: true }), 0)).toBe('tank.enemy.power.flash');
+  });
+});
+
+/* ---------------- D6：HUD 双命数行布局 ---------------- */
+
+function hudPlayer(overrides: Partial<PlayerHudView> = {}): PlayerHudView {
+  return { lives: 3, score: 0, out: false, ...overrides };
+}
+
+describe('resolveLifeRows · D6 HUD 命数行布局（1P 单行 / 2P 双行）', () => {
+  it('players.length===1：单行，label=null、out 恒为 false（与改动前绘制参数逐字段一致，像素级不回归）', () => {
+    const rows = resolveLifeRows([hudPlayer({ lives: 2, out: true })]); // out=true 也不应影响 1P 行
+    expect(rows).toEqual([{ y: LOGICAL_HEIGHT - 24, label: null, lives: 2, out: false }]);
+  });
+
+  it('players.length===1 但数组为空：lives 兜底为 0（沿用改动前 ?? 0 语义）', () => {
+    expect(resolveLifeRows([])).toEqual([{ y: LOGICAL_HEIGHT - 24, label: null, lives: 0, out: false }]);
+  });
+
+  it('players.length===2：两行，分别携带 label 1/2 与各自 lives/out，行位置不同', () => {
+    const rows = resolveLifeRows([hudPlayer({ lives: 3, out: false }), hudPlayer({ lives: 0, out: true })]);
+    expect(rows).toEqual([
+      { y: LOGICAL_HEIGHT - 40, label: 1, lives: 3, out: false },
+      { y: LOGICAL_HEIGHT - 24, label: 2, lives: 0, out: true },
+    ]);
   });
 });
 

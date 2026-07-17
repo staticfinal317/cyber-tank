@@ -74,8 +74,12 @@ export class DirectionStack {
   }
 }
 
-/** Enter/Esc/P 等一次性菜单动作：由 DOM 层做边沿检测后上抛，FSM 只消费离散事件 */
-export type MenuAction = 'confirm' | 'pause';
+/**
+ * Enter/Esc/P 等一次性菜单动作：由 DOM 层做边沿检测后上抛，FSM 只消费离散事件。
+ * menuUp/menuDown（D1）：Up/Down 方向键的 keydown 边沿，供 ClassicGame 在菜单态翻转
+ * 1P/2P 光标；非菜单态时 ClassicGame 忽略这两个动作，无副作用。
+ */
+export type MenuAction = 'confirm' | 'pause' | 'menuUp' | 'menuDown';
 
 const CONFIRM_KEYS: ReadonlySet<string> = new Set(['Enter']);
 const PAUSE_KEYS: ReadonlySet<string> = new Set(['Escape', 'KeyP']);
@@ -120,6 +124,10 @@ export class KeyboardController {
       return;
     }
     this.direction.press(event.code);
+    // 菜单光标（D1）：除照常喂 DirectionStack 外，Up/Down 边沿额外上抛 menuUp/menuDown
+    const dir = DIR_KEYS[event.code];
+    if (dir === Dir.Up) this.onMenuAction('menuUp');
+    else if (dir === Dir.Down) this.onMenuAction('menuDown');
   };
 
   private handleKeyUp = (event: KeyboardEvent): void => {

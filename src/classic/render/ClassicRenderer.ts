@@ -4,7 +4,7 @@
  * 纯消费方：只读取 WorldSnapshot 与 SimEvent，不导入 sim/ 任何模块、不访问模拟内部状态。
  * 渲染循环（rAF）由上层 M6 持有；本类被动响应 render()/resize()/dispose() 调用，不自建定时器。
  */
-import { Dir, type SimEvent, type TankView, type WorldSnapshot } from '../core/types';
+import { Dir, type PlayerHudView, type SimEvent, type TankView, type WorldSnapshot } from '../core/types';
 import { BASE, FIELD_PX, HALF_PX, POWERUP, SUBPX, TANK_PX, WAVE } from '../core/constants';
 import { buildAtlas, type SpriteAtlas, type SpriteFrame } from './sprites';
 import { computeLayout, LOGICAL_HEIGHT, LOGICAL_WIDTH } from './layout';
@@ -25,8 +25,12 @@ function subToPx(subpx: number): number {
   return Math.floor(subpx / SUBPX);
 }
 
-function resolveTankSpriteKey(tank: TankView, tick: number): string {
-  if (tank.kind === 'player') return `tank.player.l${tank.level}`;
+export function resolveTankSpriteKey(tank: TankView, tick: number): string {
+  if (tank.kind === 'player') {
+    // D5：playerIndex===1 → P2 绿色帧集（tank.player2.lN），playerIndex===0 与此前完全一致
+    const prefix = tank.playerIndex === 1 ? 'tank.player2' : 'tank.player';
+    return `${prefix}.l${tank.level}`;
+  }
   if (tank.flashing && Math.floor(tick / FLASH_BLINK_TICKS) % 2 === 0) {
     return `tank.enemy.${tank.kind}.flash`;
   }
@@ -70,7 +74,7 @@ function spawnFrameIndex(remainingTicks: number, totalTicks: number, frameCount:
  * 事件坐标（subpx）→ 特效中心点（px）的纯映射，供 ingestEvents 消费，亦单独导出以便在
  * node 环境直接单测（ClassicRenderer 本体需要浏览器 canvas，无法在 node 实例化）。
  * brickHit/steelHit 为半格左上角，bulletsCancel 为碰撞点，其余（含 playerDestroyed/
- * baseDestroyed，均携带左上角坐标）与 enemyDestroyed 同为坦克/基地左上角。
+ * baseDestroyed/playerParalyzed，均携带左上角坐标）与 enemyDestroyed 同为坦克/基地左上角。
  */
 export function resolveEffectCenter(event: SimEvent): { cx: number; cy: number } | null {
   switch (event.type) {
@@ -82,10 +86,36 @@ export function resolveEffectCenter(event: SimEvent): { cx: number; cy: number }
     case 'enemyDestroyed':
     case 'playerDestroyed':
     case 'baseDestroyed':
+    case 'playerParalyzed': // D7：坦克中心，与 playerDestroyed 同一坐标路径
       return { cx: subToPx(event.x) + TANK_PX / 2, cy: subToPx(event.y) + TANK_PX / 2 };
     default:
       return null;
   }
+}
+
+/** HUD 单行命数的绘制参数（纯数据，供 drawLifeRow 消费，亦单独导出以便 node 单测） */
+export interface LifeRowPlan {
+  /** 行纵坐标（逻辑 px） */
+  y: number;
+  /** 玩家标识数字（1/2）；null 表示不绘制标识（1P 模式，与回归前像素一致） */
+  label: 1 | 2 | null;
+  lives: number;
+  out: boolean;
+}
+
+/**
+ * HUD 命数行布局（D6）：players.length===2 时两行（ⅠP/ⅡP 标识 + 各自命数，
+ * out 玩家灰显）；否则单行——与改动前的绘制参数逐字段相同（label=null 时 drawLifeRow
+ * 的绘制路径与原实现完全一致，out 恒为 false，像素级不回归）。
+ */
+export function resolveLifeRows(players: readonly PlayerHudView[]): readonly LifeRowPlan[] {
+  if (players.length === 2) {
+    return [
+      { y: LOGICAL_HEIGHT - 40, label: 1, lives: players[0]?.lives ?? 0, out: players[0]?.out ?? false },
+      { y: LOGICAL_HEIGHT - 24, label: 2, lives: players[1]?.lives ?? 0, out: players[1]?.out ?? false },
+    ];
+  }
+  return [{ y: LOGICAL_HEIGHT - 24, label: null, lives: players[0]?.lives ?? 0, out: false }];
 }
 
 export class ClassicRenderer {
@@ -180,7 +210,9 @@ export class ClassicRenderer {
 
   private ingestEvents(events: readonly SimEvent[], tick: number): void {
     for (const event of events) {
-      const kind = explosionKindForEvent(event.type);
+      // playerParalyzed（D7：被队友子弹冻结）复用 bulletsCancel 的小型火花特效；
+      // 不改动 effects.ts 的通用映射，只在此事件→特效分发处单独处理。
+      const kind = event.type === 'playerParalyzed' ? 'explosionSmall' : explosionKindForEvent(event.type);
       if (!kind) continue;
       const center = resolveEffectCenter(event);
       if (!center) continue;
@@ -285,11 +317,27 @@ export class ClassicRenderer {
       ctx.drawImage(this.atlas.canvas, enemyFrame.x, enemyFrame.y, enemyFrame.w, enemyFrame.h, x, y, enemyFrame.w, enemyFrame.h);
     }
 
-    const lifeFrame = this.atlas.frame('hud.lifeIcon');
-    const lifeY = LOGICAL_HEIGHT - 24;
-    ctx.drawImage(this.atlas.canvas, lifeFrame.x, lifeFrame.y, lifeFrame.w, lifeFrame.h, hudX + 4, lifeY, lifeFrame.w, lifeFrame.h);
-    drawNumber(ctx, snapshot.hud.players[0]?.lives ?? 0, hudX + 4 + lifeFrame.w + gap + 2, lifeY + 2, 2, '#ffffff');
+    // D6：1P 单行 / 2P 双行命数，均由 resolveLifeRows 统一产出绘制参数
+    for (const row of resolveLifeRows(snapshot.hud.players)) this.drawLifeRow(ctx, hudX, row);
 
     drawNumber(ctx, snapshot.hud.stage, hudX + 4, LOGICAL_HEIGHT - 8, 2, '#ffffff');
+  }
+
+  /** 单行命数：可选玩家标识数字 + 命数图标 + 命数数字；出局（out）灰显（半透明 + 灰色数字） */
+  private drawLifeRow(ctx: CanvasRenderingContext2D, hudX: number, row: LifeRowPlan): void {
+    const gap = 1;
+    const color = row.out ? '#6b6b6b' : '#ffffff';
+    const iconX = row.label === null ? hudX + 4 : drawNumber(ctx, row.label, hudX + 4, row.y + 2, 1, color) + 2;
+
+    const lifeFrame = this.atlas.frame('hud.lifeIcon');
+    if (row.out) {
+      ctx.save();
+      ctx.globalAlpha = 0.4;
+      ctx.drawImage(this.atlas.canvas, lifeFrame.x, lifeFrame.y, lifeFrame.w, lifeFrame.h, iconX, row.y, lifeFrame.w, lifeFrame.h);
+      ctx.restore();
+    } else {
+      ctx.drawImage(this.atlas.canvas, lifeFrame.x, lifeFrame.y, lifeFrame.w, lifeFrame.h, iconX, row.y, lifeFrame.w, lifeFrame.h);
+    }
+    drawNumber(ctx, row.lives, iconX + lifeFrame.w + gap + 2, row.y + 2, 2, color);
   }
 }
