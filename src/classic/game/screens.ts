@@ -65,13 +65,17 @@ export class ScreensOverlay {
     container.appendChild(this.root);
   }
 
-  showMenu(hiScore: number): void {
-    this.render('#000000', [
+  showMenu(hiScore: number, gamepadConnected: boolean): void {
+    const lines = [
       this.line('坦克大作战', '32px', '#ffe400'),
       this.line(`HI-SCORE ${hiScore}`, '14px', '#a0a0a0'),
       this.line('按 Enter 开始', '18px', '#ffffff'),
       this.line('方向键/WASD 移动 · 空格/J 开火 · Esc 暂停', '13px', '#a0a0a0'),
-    ]);
+    ];
+    if (gamepadConnected) {
+      lines.push(this.line('手柄已连接：摇杆/十字键移动 · A 开火 · + 暂停', '13px', '#a0a0a0'));
+    }
+    this.render('#000000', lines);
   }
 
   showStageIntro(stageNumber: number): void {

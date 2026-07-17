@@ -17,6 +17,7 @@ import { RNG } from '../../core/RNG';
 import { World } from '../sim/World';
 import { ClassicRenderer } from '../render/ClassicRenderer';
 import { createInitialFsmState, transition, type FsmEvent, type FsmState } from './fsm';
+import { GamepadBridge } from './gamepad';
 import { createMemoryStorage, readHiScore, recordHiScoreIfHigher, type StorageLike } from './hiscore';
 import { KeyboardController, type MenuAction } from './keyboard';
 import { GameLoop } from './loop';
@@ -95,6 +96,7 @@ export class ClassicGame {
   private readonly renderer: ClassicRenderer;
   private readonly screens: ScreensOverlay;
   private readonly keyboard: KeyboardController;
+  private readonly gamepad: GamepadBridge;
   private readonly loop: GameLoop;
   private readonly storage: StorageLike;
   private readonly killTally = new StageKillTally();
@@ -117,6 +119,10 @@ export class ClassicGame {
     this.renderer = new ClassicRenderer({ container: options.container });
     this.screens = new ScreensOverlay(options.container);
     this.keyboard = new KeyboardController({ onMenuAction: (action) => this.handleMenuAction(action) });
+    this.gamepad = new GamepadBridge({
+      onMenuAction: (action) => this.handleMenuAction(action),
+      onConnectionChange: (connected) => this.handleGamepadConnectionChange(connected),
+    });
     this.loop = new GameLoop(() => this.onTick());
     this.fsmState = createInitialFsmState(CLASSIC_LEVELS.length);
     window.addEventListener('resize', this.handleResize);
@@ -125,13 +131,14 @@ export class ClassicGame {
 
   /** 进入标题菜单并启动 rAF 主循环 */
   start(): void {
-    this.screens.showMenu(readHiScore(this.storage));
+    this.screens.showMenu(readHiScore(this.storage), this.gamepad.connected);
     this.loop.start();
   }
 
   dispose(): void {
     this.loop.dispose();
     this.keyboard.dispose();
+    this.gamepad.dispose();
     this.screens.dispose();
     this.renderer.dispose();
     window.removeEventListener('resize', this.handleResize);
@@ -153,6 +160,21 @@ export class ClassicGame {
     }
   };
 
+  /**
+   * 手柄连接状态变化：断线视为"孩子手柄没电"的保护性动作，走与 Esc/切后台完全相同的
+   * 入暂停路径（同款守卫：fsmState 为 'playing' 且 world.status 仍为 'playing'，
+   * 结算延迟期间不重复暂停，理由同 handleVisibilityChange）；若正处于标题菜单，
+   * 重绘菜单以显示/隐藏手柄操作提示行，否则热插拔时菜单文案不会更新。
+   */
+  private handleGamepadConnectionChange(connected: boolean): void {
+    if (!connected && this.fsmState.kind === 'playing' && this.world?.status === 'playing') {
+      this.dispatch({ type: 'togglePause' });
+    }
+    if (this.fsmState.kind === 'menu') {
+      this.screens.showMenu(readHiScore(this.storage), connected);
+    }
+  }
+
   private handleMenuAction(action: MenuAction): void {
     this.dispatch(action === 'confirm' ? { type: 'confirm' } : { type: 'togglePause' });
   }
@@ -167,6 +189,7 @@ export class ClassicGame {
 
   /** 每个 rAF 帧、由 GameLoop 按固定步长回调 0-5 次 */
   private onTick(): void {
+    this.gamepad.poll(); // 轮询式 API，覆盖全部 FSM 状态（菜单里按 A 开始、暂停里按 + 恢复）
     switch (this.fsmState.kind) {
       case 'stageIntro':
         this.introTicks += 1;
@@ -193,7 +216,9 @@ export class ClassicGame {
     if (!world) throw new Error('ClassicGame: playing 状态下 world 未初始化（不应发生）');
 
     if (world.status === 'playing') {
-      const input = this.keyboard.sample();
+      const kb = this.keyboard.sample();
+      const gp = this.gamepad.sample();
+      const input = { dir: gp.dir ?? kb.dir, fire: kb.fire || gp.fire };
       const events = world.tick([input]);
       this.killTally.applyEvents(events);
       const snapshot = world.snapshot();
@@ -251,7 +276,7 @@ export class ClassicGame {
         this.pendingCarryOver = undefined;
         this.finalSnapshot = null;
         this.resultDelayTicks = 0;
-        this.screens.showMenu(readHiScore(this.storage));
+        this.screens.showMenu(readHiScore(this.storage), this.gamepad.connected);
         return;
       case 'stageIntro':
         this.introTicks = 0;
